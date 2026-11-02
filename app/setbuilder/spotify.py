@@ -125,31 +125,90 @@ def _n(s):
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
-def find_track(artist, title):
-    """Best Spotify match for artist/title, or None. Prefers the same version (remix/extended) when it exists."""
+PLAIN_WORDS = {"mix", "edit", "remix", "version", "extended", "original", "radio", "club", "clean", "dub", "vip",
+               "rework", "bootleg", "mashup", "remaster", "remastered", "the", "and", "x", "feat", "ft", "explicit",
+               "single", "album", "instrumental", "s", "n", "a"}
+
+
+def _version_tokens(version):
+    """Distinctive words of a version: '(Kriss Reeve Remix)' -> {'kriss', 'reeve'}; '(Extended Mix)' -> {}."""
+    return {w for w in _n(version).split() if w not in PLAIN_WORDS and not w.isdigit()}
+
+
+def _as_brackets(name):
+    """Spotify writes versions as 'Title - X Remix': turn it into 'Title (X Remix)' like file names."""
+    if " - " in name:
+        base, ver = name.split(" - ", 1)
+        return f"{base} ({ver})"
+    return name
+
+
+def _artist_ok(main, names):
+    """The main artist must really be credited ('San Pacho' must not match 'Diego San Diego')."""
+    m = _n(main)
+    if not m:
+        return True
+    return f" {m} " in f" {names} "
+
+
+def find_track(artist, title, prefer_extended=False, allow_other_remix=True):
+    """Best Spotify match. Returns a dict with 'match':
+    'exact'    same version (same remix, or the extended/original asked for),
+    'original' the original song when that remix isn't on Spotify,
+    'other'    another remix of the song (only if allow_other_remix)."""
+    from .library import is_remix
     main = re.split(r",|&| x | feat\.?| ft\.?", artist, flags=re.I)[0].strip()
     base = re.sub(r"[\(\[].*?[\)\]]", "", title).strip()
-    version = " ".join(re.findall(r"[\(\[](.*?)[\)\]]", title))
-    for q in (f"track:{base} artist:{main} {version}".strip(), f"{main} {title}", f"{main} {base}"):
+    versions = [v for v in re.findall(r"[\(\[](.*?)[\)\]]", title) if not re.match(r"(feat|ft)\b", v, re.I)]
+    version = " ".join(versions)
+    wanted_tokens = _version_tokens(version)
+    wants_remix = is_remix(title)
+    wants_extended = "extended" in _n(version)
+    queries = [f"track:{base} artist:{main} {version}".strip(), f"{main} {title}", f"{main} {base}"]
+    if prefer_extended or wants_extended:
+        queries.insert(1, f"{main} {base} extended")
+    seen, best, best_score = set(), None, 0
+    for q in queries:
         r = _call("GET", "/search", params={"q": q, "type": "track", "limit": 10})
         if r.status_code != 200:
             continue
-        items = r.json().get("tracks", {}).get("items", [])
-        best, best_score = None, 0
-        for it in items:
+        for it in r.json().get("tracks", {}).get("items", []):
+            if it["uri"] in seen:
+                continue
+            seen.add(it["uri"])
             names = _n(" ".join(a["name"] for a in it["artists"]))
-            m = _n(main)
-            if m and m.split()[0] not in names:
+            if not _artist_ok(main, names):
                 continue
-            if core_title(base) not in core_title(it["name"]) and core_title(it["name"]) not in core_title(base):
+            name_b = _as_brackets(it["name"])
+            if core_title(base) not in core_title(name_b) and core_title(name_b) not in core_title(base):
                 continue
-            score = 1 + (2 if version and _n(version) in _n(it["name"]) else 0) + it.get("popularity", 0) / 100
+            name_n = _n(name_b)
+            ext = "extended" in name_n
+            cand_versions = [v for v in re.findall(r"[\(\[](.*?)[\)\]]", name_b) if not re.match(r"(feat|ft|with)\b", v, re.I)]
+            cand_tokens = _version_tokens(" ".join(cand_versions))
+            # a version carrying a name ("Riprock 'n' Alex G. Extended Club") is someone's remix
+            someone_elses = bool(cand_tokens - wanted_tokens) or (is_remix(name_b) and not wanted_tokens and not wants_remix)
+            if wanted_tokens:
+                kind = ("exact" if wanted_tokens <= set(name_n.split()) | set(names.split())
+                        else "other" if someone_elses else "original")
+            elif wants_remix:
+                kind = "exact" if is_remix(name_b) else "original" if not cand_tokens else "other"
+            else:
+                kind = "other" if someone_elses else "exact"
+            if kind == "other" and not allow_other_remix:
+                continue
+            score = {"exact": 10, "original": 5, "other": 2}[kind] + it.get("popularity", 0) / 100
+            if ext and (prefer_extended or wants_extended):
+                score += 2.5          # DJ-friendly: long intro / outro
             if score > best_score:
-                best, best_score = it, score
-        if best:
-            return {"uri": best["uri"], "name": best["name"], "artists": ", ".join(a["name"] for a in best["artists"]),
-                    "url": best["external_urls"].get("spotify", "")}
-    return None
+                best, best_score = (it, kind), score
+        if best and best[1] == "exact" and (not prefer_extended or "extended" in _n(best[0]["name"])):
+            break                     # good enough, save API calls
+    if not best:
+        return None
+    it, kind = best
+    return {"uri": it["uri"], "name": it["name"], "artists": ", ".join(a["name"] for a in it["artists"]),
+            "url": it["external_urls"].get("spotify", ""), "match": kind}
 
 
 def playlist_id(url_or_id):
@@ -199,6 +258,18 @@ def add_tracks(pid, uris):
             a = _call("POST", f"/playlists/{pid}/tracks", json=chunk)
         if a.status_code not in (200, 201):
             raise SpotifyError(f"Ajout des morceaux refusé : {a.status_code} {a.text[:150]}")
+
+
+def replace_tracks(pid, uris):
+    """Replace a playlist's content (first 100 with PUT, the rest appended)."""
+    body = {"uris": uris[:100]}
+    r = _call("PUT", f"/playlists/{pid}/items", json=body)
+    if r.status_code not in (200, 201):
+        r = _call("PUT", f"/playlists/{pid}/tracks", json=body)
+    if r.status_code not in (200, 201):
+        raise SpotifyError(f"Mise à jour de la playlist refusée : {r.status_code} {r.text[:150]}")
+    if len(uris) > 100:
+        add_tracks(pid, uris[100:])
 
 
 def create_playlist(name, description, uris, public=False):

@@ -192,7 +192,8 @@ def build_extended(tracks, set_ids, known_min=4, wave_min=90):
     """Set first, then remaining well-known tracks, then the rest in rising waves, then tracks to avoid."""
     by = {t["id"]: t for t in tracks}
     rest = [t for t in tracks if t["id"] not in set(set_ids)]
-    avoid = [t for t in rest if t.get("excluded") or t.get("short") or t.get("duplicate_in_set")]
+    avoid = [t for t in rest if t.get("excluded") or t.get("short") or t.get("duplicate_in_set")
+             or t.get("health") == "bad"]
     rest = [t for t in rest if t not in avoid]
     known = [t for t in rest if t["known"] >= known_min]
     others = sorted([t for t in rest if t["known"] < known_min], key=lambda t: t["bpm"])
@@ -211,7 +212,7 @@ def build_extended(tracks, set_ids, known_min=4, wave_min=90):
             blocks.append({"name": f"Reste – vague {w + 1}" if waves > 1 else "Reste", "ids": ids})
             last = by[ids[-1]]
     if avoid:
-        blocks.append({"name": "À éviter (extraits, doublons, exclus)",
+        blocks.append({"name": "À éviter (extraits, doublons, fichiers abîmés, exclus)",
                        "ids": [t["id"] for t in sorted(avoid, key=lambda t: t["bpm"])]})
     return blocks
 

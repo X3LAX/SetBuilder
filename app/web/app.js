@@ -79,9 +79,26 @@ function flags(t) {
   if (t.quiet) f.push(`<span class="chip warn" title="Mixé moins fort : monte le gain">volume faible</span>`);
   if (!t.has_cover) f.push(`<span class="chip">sans pochette</span>`);
   if (t.bitrate && t.bitrate < 200 && !/flac|wav|aiff/i.test(t.kind)) f.push(`<span class="chip" title="Qualité">${t.bitrate} kbps</span>`);
+  if (t.health && t.health !== "ok") f.push(healthChip(t));
   if (t.forced) f.push(`<span class="chip ok">forcé</span>`);
   if (t.excluded) f.push(`<span class="chip bad">exclu</span>`);
   return f.join("");
+}
+function healthChip(t) {
+  if (!t.health || t.health === "ok") return t.health === "ok" ? `<span class="chip ok" title="Fichier vérifié : complet et lisible">✓ fichier OK</span>` : "";
+  const tip = esc((t.issues || []).join(" · "));
+  return t.health === "bad" ? `<span class="chip bad" title="${tip}">⚠ fichier abîmé</span>`
+    : `<span class="chip warn" title="${tip}">${esc(shortIssue(t.issues))}</span>`;
+}
+function shortIssue(issues = []) {
+  const i = issues[0] || "";
+  if (i.startsWith("faux")) return "faux 320";
+  if (i.startsWith("silence")) return "silence";
+  if (i.startsWith("qualité faible")) return "basse qualité";
+  if (i.startsWith("extension")) return "mauvaise extension";
+  if (i.startsWith("très court")) return "très court";
+  if (i.includes("erreur")) return "petites erreurs";
+  return "à vérifier";
 }
 const byId = () => Object.fromEntries(S.proj.tracks.map(t => [t.id, t]));
 
@@ -158,7 +175,8 @@ function renderImport() {
       <div class="row" style="margin-bottom:12px"><h2 style="margin:0">${rows.length} fichiers trouvés</h2>
         <span class="chip warn">${rows.filter(r => !r.confident).length} à vérifier</span>
         <span class="chip">${rows.filter(r => !r.has_cover).length} sans pochette</span>
-        <span class="chip warn">${rows.filter(r => r.dup_of).length} doublons</span><span class="spacer"></span>
+        <span class="chip warn">${rows.filter(r => r.dup_of).length} doublons</span>
+        ${rows.some(r => r.health === "bad") ? `<span class="chip bad" title="Décochés : coche-les si tu veux quand même les importer">${rows.filter(r => r.health === "bad").length} fichiers abîmés</span>` : ""}<span class="spacer"></span>
         <button class="btn small" id="iClear">Vider</button>
         <button class="btn" id="iAI" ${aiOk ? "" : "disabled title='Connecte une IA dans Réglages'"}>✦ Corriger les noms douteux</button>
         <label class="check"><input type="checkbox" id="iCovers" checked> Pochettes</label>
@@ -170,7 +188,7 @@ function renderImport() {
         <td class="name"><div class="t" title="${esc(r.src)}">${esc(r.rel)}</div><div class="a">${esc(r.folder)}</div></td>
         <td><input type="text" class="ia" value="${esc(r.artist)}"></td><td><input type="text" class="it" value="${esc(r.title)}"></td>
         <td class="num muted">${fmt(r.duration)}</td>
-        <td>${r.by_ai ? `<span class="chip ai">IA</span>` : ""}${r.confident ? "" : `<span class="chip warn">à vérifier</span>`}${r.dup_of ? `<span class="chip warn">doublon</span>` : ""}${r.has_cover ? "" : `<span class="chip">sans pochette</span>`}${r.duration < 110 ? `<span class="chip bad">extrait</span>` : ""}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
+        <td>${r.by_ai ? `<span class="chip ai">IA</span>` : ""}${r.confident ? "" : `<span class="chip warn">à vérifier</span>`}${r.dup_of ? `<span class="chip warn">doublon</span>` : ""}${r.has_cover ? "" : `<span class="chip">sans pochette</span>`}${r.duration < 110 ? `<span class="chip bad">extrait</span>` : ""}${healthChip(r)}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
   $("#iFolders").onclick = async () => scanSources(await pickFolders(true));
   $("#iFiles").onclick = async () => scanSources(await pickFiles());
   $("#iSc").onclick = () => go("soundcloud");
@@ -190,6 +208,7 @@ function renderImport() {
     const analyse = $("#iAn").checked;
     S.rows = null; toast(`${r.added} morceaux importés, ${r.covers} pochettes ajoutées.`);
     if (analyse) await job("/api/analyze", { root: S.proj.root }, "Analyse BPM / tonalité / énergie").catch(() => {});
+    await job("/api/quality", { root: S.proj.root }, "Contrôle des fichiers").catch(() => {});
     await loadProject(S.proj.root); go("library");
   };
 }
@@ -198,7 +217,7 @@ async function scanSources(sources) {
   if (!sources?.length) return;
   S.state = S.state || await api("/api/state");
   const rows = await job("/api/import/preview", { sources }, "Recherche des fichiers audio");
-  rows.forEach(r => r.skip = r.duration < 20);
+  rows.forEach(r => r.skip = r.skip || r.duration < 20);
   const known = new Set((S.rows || []).map(x => x.src));
   S.rows = (S.rows || []).concat(rows.filter(x => !known.has(x.src)));
   if (S.view !== "import") go("import"); else renderImport();
@@ -230,6 +249,8 @@ function renderLibrary() {
   const th = (k, l) => `<th class="sort" data-k="${k}">${l}${sk === k ? (sd > 0 ? " ↑" : " ↓") : ""}</th>`;
   $("#view").innerHTML = `
     ${ts.length && nA < ts.length ? `<div class="banner warn"><b>${ts.length - nA} morceaux pas encore analysés.</b><span>BPM, tonalité et énergie sont nécessaires pour créer le set.</span><span class="spacer"></span><button class="btn primary" id="lAn2">Analyser maintenant</button></div>` : ""}
+    ${ts.some(t => t.health === "bad") ? `<div class="banner warn"><b>${ts.filter(t => t.health === "bad").length} fichiers abîmés</b><span>Coupures ou sauts à la lecture : ils sont écartés des sets. Retélécharge-les (survole « ⚠ fichier abîmé » pour le détail).</span><span class="spacer"></span><button class="btn small" id="lBad">Les afficher</button></div>` : ""}
+    ${ts.length && !ts.some(t => t.health) ? `<div class="banner"><b>Fichiers pas encore contrôlés.</b><span>Vérifie qu'ils sont complets, lisibles et de bonne qualité.</span><span class="spacer"></span><button class="btn primary" id="lQ2">Vérifier les fichiers</button></div>` : ""}
     ${ts.length && nA === ts.length && !P.set.length ? `<div class="banner"><b>Tout est analysé.</b><span>Prochaine étape : choisir tes artistes et générer le set.</span><span class="spacer"></span><button class="btn primary" id="lGoSet">Aller au set →</button></div>` : ""}
     <div class="panel"><div class="row">
       <div class="stats"><div class="stat"><b>${ts.length}</b><span>morceaux</span></div>
@@ -240,6 +261,7 @@ function renderLibrary() {
       <button class="btn primary" id="lAn">${nA < ts.length ? `Analyser ${ts.length - nA} morceaux` : "Ré-analyser"}</button>
       <button class="btn" id="lCov" ${nC ? "" : "disabled"}>Pochettes manquantes (${nC})</button>
       <button class="btn" id="lFix">Ranger les noms</button>
+      <button class="btn" id="lQ">Vérifier les fichiers</button>
       <button class="btn" id="lKnown" ${has ? "" : "disabled title='Connecte ton abonnement Claude ou une clé API dans Réglages'"}>✦ Titres connus (IA)</button>
       <button class="btn" id="lAdd">+ Importer</button></div></div>
     <div class="row" style="margin-bottom:10px"><input id="lQ" type="text" placeholder="Rechercher…" value="${esc(S.filter)}" style="width:280px">
@@ -262,6 +284,13 @@ function renderLibrary() {
     refresh();
   };
   if ($("#lAn2")) $("#lAn2").onclick = () => $("#lAn").click();
+  const runQ = async force => {
+    const r = await job("/api/quality", { root: P.root, force }, "Contrôle des fichiers");
+    const c = r.counts; toast(`${c.ok || 0} fichiers OK · ${c.warn || 0} à vérifier · ${c.bad || 0} abîmés.`, !!c.bad); refresh();
+  };
+  $("#lQ").onclick = () => runQ(true);
+  if ($("#lQ2")) $("#lQ2").onclick = () => runQ(false);
+  if ($("#lBad")) $("#lBad").onclick = () => { S.sort = ["health", 1]; S.filter = ""; renderLibrary(); };
   if ($("#lGoSet")) $("#lGoSet").onclick = () => go("set");
   $("#lCov").onclick = async () => { const r = await job("/api/covers/fetch", { root: P.root }, "Recherche des pochettes"); toast(`${r.covers} pochettes trouvées sur ${r.asked}.`); refresh(); };
   $("#lFix").onclick = () => {
@@ -335,7 +364,9 @@ function renderSet() {
       ${tr ? `<tr class="trans"><td></td><td colspan="9"><span class="tdot ${tr}">${{ ok: "● enchaînement OK", moyen: "● enchaînement possible", clash: "● clash de tonalité ou de tempo" }[tr]}</span></td></tr>` : ""}`;
   }).join("");
   const clashes = P.transitions.filter(x => x === "clash").length;
+  const badInSet = P.set.filter(i => tm[i]?.health === "bad");
   $("#view").innerHTML = `
+    ${badInSet.length ? `<div class="banner warn"><b>${badInSet.length} fichier(s) abîmé(s) dans ce set</b><span>${badInSet.map(i => esc(tm[i].title)).join(", ")} : remplace-les (↻) ou clique sur « Regénérer le set ».</span></div>` : ""}
     <div class="grid2">
       <div class="panel params"><h2>Réglages du set</h2>
         <label class="field">Durée : <b id="dV">${fmtH(pr.duration)}</b><input type="range" id="pD" min="30" max="300" step="5" value="${pr.duration}"></label>
@@ -615,8 +646,18 @@ async function renderSpotify() {
       <div class="row"><input type="text" id="spId" value="${esc(s.spotify_client_id || "")}" placeholder="Client ID" style="width:340px">
         <button class="btn primary" id="spIn">Connecter Spotify</button><button class="btn" id="spRef">Actualiser</button></div>
       ${st.error ? `<div class="muted" style="margin-top:8px;color:var(--warn)">${esc(st.error)}</div>` : ""}</div>`}
+    <div class="panel"><h2>Ton set en playlist Spotify</h2>
+      ${hasSet ? `<p class="hint">Recrée « ${esc(P.name)} » sur Spotify, dans l'ordre du set. Si un remix n'existe pas sur Spotify, l'app met la version originale du titre (jamais le remix de quelqu'un d'autre) et te dit lesquels.</p>
+      <div class="row">
+        <label class="check"><input type="radio" name="spsW" value="set" checked> Le set (${fmtH(P.set_minutes)})</label>
+        <label class="check"><input type="radio" name="spsW" value="extended" ${P.blocks.length > 1 ? "" : "disabled"}> Le set + la suite</label>
+        <label class="check"><input type="checkbox" id="spsExt" checked> Version originale en extended quand elle existe</label>
+        <label class="check"><input type="checkbox" id="spsPub"> Publique</label>
+        <button class="btn primary" id="spsGo" ${st.connected ? "" : "disabled"}>Créer la playlist du set</button></div>
+      <div id="spsRes"></div>`
+      : `<p class="hint" style="margin:0">${P ? "Génère d'abord un set (étape 3)." : "Choisis un projet avec un set pour le recréer sur Spotify."}</p>`}</div>
     <div class="panel"><h2>Ajouter des morceaux similaires</h2>
-      <p class="hint">Trouve des morceaux du même style et d'un tempo proche, à partir d'une de tes playlists Spotify ou du set de ton projet, et les ajoute sur ton Spotify. Les morceaux déjà présents sont ignorés.</p>
+      <p class="hint">Trouve des morceaux du même style et d'un tempo proche, à partir d'une de tes playlists Spotify ou du set de ton projet, et les ajoute sur ton Spotify, en version extended quand elle existe. Les morceaux déjà présents sont ignorés.</p>
       <div class="params" style="max-width:720px">
         <div class="row">
           <label class="check"><input type="radio" name="spFrom" value="pl" ${hasSet ? "" : "checked"}> Une playlist Spotify</label>
@@ -645,6 +686,16 @@ async function renderSpotify() {
     S.state = await api("/api/settings", { spotify_client_id: id });
     await api("/api/spotify/login", {});
     toast("Autorise SetBuilder dans ton navigateur, puis clique sur « Actualiser ».");
+  };
+  if ($("#spsGo")) $("#spsGo").onclick = async () => {
+    const r = await job("/api/spotify/set-playlist", { root: P.root, which: $("input[name=spsW]:checked").value,
+      prefer_extended: $("#spsExt").checked, public: $("#spsPub").checked }, "Spotify : playlist du set");
+    const list = (title, items, cls) => items.length ? `<details class="guide" ${cls === "bad" ? "open" : ""}><summary>${title} (${items.length})</summary><ol style="margin:6px 0 0;padding-left:20px;font-size:12.5px;color:var(--muted)">${items.map(x => `<li>${esc(x)}</li>`).join("")}</ol></details>` : "";
+    $("#spsRes").innerHTML = `<div class="row" style="margin-top:14px"><span class="chip ok">${r.updated ? "playlist mise à jour" : "playlist créée"} · ${r.total} morceaux</span>
+        <span class="chip ok">${r.exact.length} bonne version</span>${r.original.length ? `<span class="chip warn">${r.original.length} en version originale</span>` : ""}${r.missing.length ? `<span class="chip bad">${r.missing.length} introuvables</span>` : ""}
+        <button class="btn small" id="spsOpen">Ouvrir dans Spotify</button></div>
+      ${list("Remix absent de Spotify, remplacé par l'original", r.original, "warn")}${list("Introuvables sur Spotify", r.missing, "bad")}${list("Trouvés dans la bonne version", r.exact)}`;
+    $("#spsOpen").onclick = () => api("/api/open", { path: r.url });
   };
   $("#spGo").onclick = async () => {
     const pl = $("input[name=spFrom]:checked").value === "pl", url = $("#spUrl").value.trim();

@@ -4,6 +4,7 @@ Application Mac pour préparer un set DJ pour Rekordbox à partir d'un dossier d
 
 - **Téléchargement SoundCloud** : un morceau, une playlist (set), un profil ou ses likes (via [yt-dlp](https://github.com/yt-dlp/yt-dlp)). Fichier original quand l'artiste l'autorise, pochette et infos ajoutées, conversion automatique des formats que Rekordbox ne lit pas.
 - **Import en vrac** : dossiers dans des dossiers, noms sales (« 01. bad bunny - … [FREE DOWNLOAD] »), fichiers sans tags. L'app trouve tous les fichiers audio, propose des noms propres « Artiste - Titre (Remix) », repère les doublons et les extraits, et copie tout dans `Musique/<projet>/Tracks` (les originaux ne sont jamais modifiés).
+- **Contrôle des fichiers** : à l'import, après un téléchargement SoundCloud et à la demande, chaque fichier est décodé en entier pour repérer les fichiers corrompus ou abîmés (coupures, son manquant), tronqués, faux 320 kbps (spectre coupé comme un 128 kbps), silences, mauvaise extension, extraits. Les fichiers abîmés sont décochés à l'import et écartés des sets.
 - **Pochettes** manquantes ajoutées automatiquement (SoundCloud, Deezer, iTunes) ou à la main.
 - **Analyse** BPM, tonalité (Camelot), énergie, volume et qualité, avec [Essentia](https://essentia.upf.edu/).
 - **Générateur de set** : durée visée, BPM de départ/arrivée, montée progressive, enchaînements harmoniques, priorité aux remix de titres connus. Édition par glisser-déposer, remplacement par un morceau compatible, verrouillage du début, pré-écoute des transitions.
@@ -13,7 +14,9 @@ Application Mac pour préparer un set DJ pour Rekordbox à partir d'un dossier d
   - **dossiers** (fiable) : un dossier par playlist, morceaux numérotés, lisible via **FOLDER** ; FLAC → AIFF en option pour les anciens lecteurs ;
   - **clé Rekordbox (expérimental)** : base `PIONEER/rekordbox/export.pdb` + fichiers d'analyse (grille de tempo, formes d'onde) pour les lecteurs « Device Library » (XDJ-RX3, CDJ-3000, XDJ-XZ, CDJ-2000NXS2…), sans passer par Rekordbox. Le format suit les notes de [rekordbox-pdb](https://github.com/fragmede/rekordbox-pdb) (MIT) ; les pages générées sont identiques octet pour octet à celles de Rekordbox sur les fichiers de référence, et chaque clé est relue avant d'être rendue. **Pas encore validé sur un vrai lecteur** : teste ta clé avant une date et garde un plan B. Non affilié à AlphaTheta / Pioneer DJ.
 - **Artistes à mettre en avant, par set** : après l'analyse, choisis les artistes parmi ceux de tes morceaux et classe-les par glisser-déposer.
-- **Spotify, morceaux similaires** : à partir du set ou d'une de tes playlists Spotify, l'app trouve des morceaux du même style (IA et/ou artistes similaires Deezer) et les ajoute à cette playlist ou à une nouvelle.
+- **Spotify** :
+  - **ton set en playlist**, dans l'ordre : la bonne version quand elle existe, sinon la version originale du titre (jamais le remix de quelqu'un d'autre), avec la liste des remplacements ; relancer met à jour la même playlist ;
+  - **morceaux similaires** : à partir du set ou d'une de tes playlists, en privilégiant les versions extended (IA et/ou artistes similaires Deezer).
 - **IA optionnelle et économe** : seulement pour corriger les noms illisibles, noter si un titre est connu et proposer des morceaux similaires. L'analyse audio, les pochettes et le set n'utilisent pas l'IA. Seules les lignes douteuses sont envoyées, avec le modèle le plus léger, et chaque réponse est mémorisée. Trois connexions possibles :
   - ton **abonnement Claude Pro/Max**, via [Claude Code](https://claude.com/product/claude-code) ;
   - ton **abonnement ChatGPT**, via [Codex](https://github.com/openai/codex) ;
@@ -70,6 +73,7 @@ python3 tests/test_core.py                                   # tests rapides (n�
 - `app/setbuilder/soundcloud.py` : téléchargements SoundCloud
 - `app/setbuilder/spotify.py` : connexion Spotify, recherche, playlists, similaires Deezer
 - `app/setbuilder/export.py` : XML Rekordbox, m3u8, tracklist
+- `app/setbuilder/quality.py` : contrôle des fichiers (décodage complet, spectre, silences)
 - `app/setbuilder/usb.py` : copie sur clé USB pour CDJ / XDJ (mode dossiers)
 - `app/setbuilder/rekordbox_usb.py` + `pdb_static.py` : clé Rekordbox expérimentale (export.pdb, ANLZ)
 - `app/setbuilder/server.py` + `app/web/` : interface

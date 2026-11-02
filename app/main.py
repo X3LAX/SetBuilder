@@ -14,6 +14,8 @@ PREFERRED_PORT = 47615   # fixed so the Spotify redirect URI stays the same
 
 def free_port():
     s = socket.socket()
+    # old connections in TIME_WAIT must not push us off the fixed port (Spotify's redirect URI needs it)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         s.bind(("127.0.0.1", PREFERRED_PORT))
     except OSError:

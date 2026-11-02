@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, analysis, covers, export, library, planner, rekordbox_usb, soundcloud, spotify, usb
+from . import ai, analysis, covers, export, library, planner, quality, rekordbox_usb, soundcloud, spotify, usb
 from .config import get_api_key, load_settings, save_settings, set_api_key
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -117,6 +117,11 @@ def enriched(p):
         t["short"] = t["duration"] < 110
         t["quiet"] = bool(a) and a.get("loud_db", -9) < -13
         t["analysed"] = bool(a)
+        q = t.get("quality") or {}
+        t["health"] = q.get("status")                  # None = not checked yet
+        t["issues"] = [txt for _, txt in q.get("issues", [])]
+        if t["health"] == "bad":
+            t["excluded_auto"] = True
         t.pop("analysis", None)
         rows.append(t)
     fams = {}
@@ -302,9 +307,22 @@ def get_project(root: str):
 
 # ------------------------------------------------------------ import
 
+def _preview_with_quality(sources, progress):
+    rows = library.preview_import(sources)
+    progress(0, len(rows), "Contrôle des fichiers…")
+    res = quality.check_many([r["src"] for r in rows], progress)
+    for r in rows:
+        q = res.get(r["src"], {})
+        r["health"] = q.get("status")
+        r["issues"] = [txt for _, txt in q.get("issues", [])]
+        if r["health"] == "bad":
+            r["skip"] = True      # damaged files are not imported unless the user ticks them
+    return rows
+
+
 @app.post("/api/import/preview")
 def import_preview(body: dict):
-    return start_job(lambda progress: library.preview_import(body["sources"]))
+    return start_job(lambda progress: _preview_with_quality(body["sources"], progress))
 
 
 @app.post("/api/import/ai")
@@ -476,6 +494,35 @@ def run_analysis(body: dict):
     return start_job(run)
 
 
+def _check_quality(p, progress, force=False):
+    todo = {}
+    for tid, t in p.data["tracks"].items():
+        path = p.path_of(tid)
+        st = path.stat()
+        key = f"{st.st_size}:{int(st.st_mtime)}"
+        if force or (t.get("quality") or {}).get("key") != key:
+            todo[str(path)] = (tid, key)
+    res = quality.check_many(list(todo), progress) if todo else {}
+    with LOCK:
+        for path, r in res.items():
+            tid, key = todo[path]
+            if tid in p.data["tracks"]:
+                p.data["tracks"][tid]["quality"] = {"key": key, "status": r["status"], "issues": r["issues"],
+                                                     "cutoff_khz": r.get("cutoff_khz")}
+        p.save()
+    counts = {}
+    for t in p.data["tracks"].values():
+        st = (t.get("quality") or {}).get("status", "?")
+        counts[st] = counts.get(st, 0) + 1
+    return {"checked": len(res), "counts": counts}
+
+
+@app.post("/api/quality")
+def check_quality(body: dict):
+    p = project(body["root"])
+    return start_job(lambda progress: _check_quality(p, progress, body.get("force", False)))
+
+
 @app.post("/api/known/ai")
 def known_ai(body: dict):
     p = project(body["root"])
@@ -510,7 +557,7 @@ def generate(body: dict):
         progress(0, 2, "Construction du set…")
         keep = int(body.get("keep_prefix", 0))
         prefix = p.data["set"][:keep] if keep else []
-        candidates = [t for t in ts if not t["duplicate_in_set"] and not t["short"]] or ts
+        candidates = [t for t in ts if not t["duplicate_in_set"] and not t["short"] and t["health"] != "bad"] or ts
         set_ids = planner.build_set(candidates, float(params.get("duration", 90)), float(params.get("bpm_start", 122)),
                                     float(params.get("bpm_end", 129)), params.get("shape", "progressive"),
                                     params.get("strictness", "normale"), prefix=prefix)
@@ -572,8 +619,12 @@ def soundcloud_download(body: dict):
 
     def run(progress):
         files, errors = soundcloud.download(url, dest, progress)
-        progress(0, 1, "Lecture des fichiers…")
-        rows = library.preview_import(files) if (files and p) else []
+        progress(0, 1, "Lecture et contrôle des fichiers…")
+        rows = _preview_with_quality(files, progress) if (files and p) else []
+        if files and not p:
+            res = quality.check_many(files, progress)
+            errors += [f"{Path(f).name} : {'; '.join(t for _, t in res[f]['issues'])}" for f in files
+                       if res[f]["status"] == "bad"]
         return {"rows": rows, "files": files, "errors": errors[:20], "count": len(files)}
 
     return start_job(run)
@@ -620,6 +671,64 @@ def spotify_callback(code: str = "", state: str = "", error: str = ""):
 def spotify_logout():
     spotify.logout()
     return spotify_status()
+
+
+@app.post("/api/spotify/set-playlist")
+def spotify_set_playlist(body: dict):
+    """The set (or set + suite) as a Spotify playlist, in order. A remix that isn't on Spotify is replaced by
+    the original song; another artist's remix is never used instead."""
+    p = project(body["root"])
+
+    def run(progress):
+        ts = {t["id"]: t for t in enriched(p)}
+        ids = [i for i in p.data["set"] if i in ts]
+        if body.get("which") == "extended":
+            ids += [i for b in p.data.get("blocks", [])[1:] if not b["name"].startswith("À éviter")
+                    for i in b["ids"] if i in ts]
+        if not ids:
+            raise ai.AIUnavailable("Génère d'abord un set.")
+        uris, seen, exact, original, missing = [], set(), [], [], []
+        for n, tid in enumerate(ids, 1):
+            t = ts[tid]
+            progress(n, len(ids), f"Spotify : {t['artist']} - {t['title']}")
+            hit = spotify.find_track(t["artist"], t["title"], prefer_extended=bool(body.get("prefer_extended", True)),
+                                     allow_other_remix=False)
+            label = f"{t['artist']} - {t['title']}"
+            if not hit:
+                missing.append(label)
+                continue
+            if hit["uri"] in seen:
+                continue
+            seen.add(hit["uri"]); uris.append(hit["uri"])
+            (exact if hit["match"] == "exact" else original).append(f"{label}  →  {hit['artists']} - {hit['name']}")
+        if not uris:
+            raise ai.AIUnavailable("Aucun morceau du set trouvé sur Spotify.")
+        minutes = round(sum(ts[i]["play"] for i in p.data["set"] if i in ts) / 60)
+        which = body.get("which", "set")
+        name = body.get("name") or (f"{p.data['name']} · set {minutes} min" if which != "extended"
+                                    else f"{p.data['name']} · set étendu")
+        # update the playlist made last time for this set instead of piling up copies
+        known = p.data.setdefault("spotify_playlists", {})
+        pid = spotify.playlist_id(body["update"]) if body.get("update") else known.get(which)
+        updated = False
+        if pid:
+            try:
+                spotify.playlist_info(pid)
+                spotify.replace_tracks(pid, uris)
+                url, updated = f"https://open.spotify.com/playlist/{pid}", True
+            except spotify.SpotifyError:
+                pid = None          # deleted on Spotify: make a new one
+        if not pid:
+            pl = spotify.create_playlist(name, f"Set préparé avec SetBuilder ({len(uris)} morceaux, dans l'ordre).",
+                                         uris, public=bool(body.get("public")))
+            pid, url = pl["id"], pl["url"]
+        with LOCK:
+            known[which] = pid
+            p.save()
+        return {"url": url, "updated": updated, "total": len(uris), "exact": exact, "original": original,
+                "missing": missing}
+
+    return start_job(run)
 
 
 @app.get("/api/spotify/playlist")
@@ -680,7 +789,7 @@ def spotify_similar(body: dict):
                 if ct in exclude:
                     continue
                 progress(n, len(cands), f"Spotify : {c['artist']} - {c['title']}")
-                hit = spotify.find_track(c["artist"], c["title"])
+                hit = spotify.find_track(c["artist"], c["title"], prefer_extended=True)
                 if hit and hit["uri"] not in seen:
                     seen.add(hit["uri"]); uris.append(hit["uri"]); exclude.add(ct)
                     added.append(f"{hit['artists']} - {hit['name']}")

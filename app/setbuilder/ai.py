@@ -67,7 +67,8 @@ original club track. Keep every id."""
 SIMILAR_PROMPT = """You are a DJ's crate digger. Given a DJ set or playlist (artist - title, with BPM and Camelot key \
 when known), suggest real, existing tracks that would fit in it: same genre, sub-genre and energy, similar tempo \
 (±3 BPM), compatible keys when you know them. Work out the style from the tracks themselves (do not assume a \
-genre). Prefer club-friendly versions (extended mixes, club remixes) and a mix of well-known and fresh tracks. \
+genre). Strongly prefer DJ versions: when an extended mix exists, give its exact title with the version, e.g. \
+"Song (Extended Mix)"; club remixes are welcome too. Mix well-known and fresh tracks. \
 Never repeat a track from the list. Only suggest tracks you are confident exist on Spotify; exact artist and title."""
 
 
