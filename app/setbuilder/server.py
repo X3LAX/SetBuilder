@@ -899,6 +899,8 @@ def do_export(body: dict):
 
 @app.post("/api/reveal")
 def reveal(body: dict):
+    if not Path(body["path"]).exists():
+        raise HTTPException(404, "Fichier introuvable : il a peut-être été déplacé ou supprimé.")
     subprocess.run(["open", "-R", body["path"]])
     return {"ok": True}
 

@@ -100,6 +100,9 @@ function shortIssue(issues = []) {
   if (i.includes("erreur")) return "petites erreurs";
   return "à vérifier";
 }
+// Show a file selected in a Finder window.
+const reveal = path => api("/api/reveal", { path });
+const trackPath = t => `${S.proj.root}/${t.file}`;
 const byId = () => Object.fromEntries(S.proj.tracks.map(t => [t.id, t]));
 
 // ------------------------------------------------------------------ navigation
@@ -184,7 +187,7 @@ function renderImport() {
         <button class="btn primary" id="iRun">Importer ${rows.filter(r => !r.skip).length} morceaux</button></div>
       <table><thead><tr><th style="width:28px"></th><th style="width:28px"></th><th>Fichier d'origine</th><th style="width:26%">Artiste</th><th style="width:34%">Titre</th><th>Durée</th><th>État</th></tr></thead>
       <tbody>${rows.map((r, i) => `<tr data-i="${i}">
-        <td><input type="checkbox" class="inc" ${r.skip ? "" : "checked"}></td><td><button class="icon pv" title="Écouter">▶</button></td>
+        <td><input type="checkbox" class="inc" ${r.skip ? "" : "checked"}></td><td class="num"><button class="icon pv" title="Écouter">▶</button><button class="icon finder" title="Afficher dans le Finder">⌕</button></td>
         <td class="name"><div class="t" title="${esc(r.src)}">${esc(r.rel)}</div><div class="a">${esc(r.folder)}</div></td>
         <td><input type="text" class="ia" value="${esc(r.artist)}"></td><td><input type="text" class="it" value="${esc(r.title)}"></td>
         <td class="num muted">${fmt(r.duration)}</td>
@@ -199,6 +202,7 @@ function renderImport() {
     $(".inc", tr).onchange = e => { r.skip = !e.target.checked; $("#iRun").textContent = `Importer ${rows.filter(x => !x.skip).length} morceaux`; };
     $(".ia", tr).oninput = e => r.artist = e.target.value;
     $(".it", tr).oninput = e => r.title = e.target.value;
+    $(".finder", tr).onclick = () => reveal(r.src);
     $(".pv", tr).onclick = () => player.playUrl(`/api/preview-audio?path=${encodeURIComponent(r.src)}`, r.title || r.rel, r.artist || r.folder);
   });
   $("#iClear").onclick = () => { S.rows = null; renderImport(); };
@@ -263,7 +267,7 @@ function renderLibrary() {
       <button class="btn" id="lFix">Ranger les noms</button>
       <button class="btn" id="lQ">Vérifier les fichiers</button>
       <button class="btn" id="lKnown" ${has ? "" : "disabled title='Connecte ton abonnement Claude ou une clé API dans Réglages'"}>✦ Titres connus (IA)</button>
-      <button class="btn" id="lAdd">+ Importer</button></div></div>
+      <button class="btn" id="lAdd">+ Importer</button><button class="btn" id="lDir" title="Ouvrir le dossier des morceaux">Ouvrir le dossier</button></div></div>
     <div class="row" style="margin-bottom:10px"><input id="lQ" type="text" placeholder="Rechercher…" value="${esc(S.filter)}" style="width:280px">
       <span class="muted">Clique sur un nom pour le modifier · ★ = à quel point le titre est connu (modifiable)</span></div>
     ${ts.length ? `<table><thead><tr><th></th><th></th>${th("artist", "Morceau")}${th("bpm", "BPM")}${th("camelot", "Clé")}${th("energy", "Énergie")}${th("duration", "Durée")}${th("known", "Connu")}<th>Infos</th><th></th></tr></thead>
@@ -274,7 +278,7 @@ function renderLibrary() {
       <td>${t.analysed ? eBar(t.energy) : ""}</td><td class="num muted">${fmt(t.duration)}</td>
       <td><select class="kn" title="Connu (0-10) — ${t.known_source}">${[...Array(11).keys()].map(k => `<option ${k === t.known ? "selected" : ""}>${k}</option>`).join("")}</select></td>
       <td>${flags(t)}${inSet.has(t.id) ? `<span class="chip ok">dans le set</span>` : ""}</td>
-      <td class="num"><button class="icon toset" title="Ajouter au set">＋</button><button class="icon force ${t.forced ? "on" : ""}" title="Forcer dans le set">★</button><button class="icon excl ${t.excluded ? "on" : ""}" title="Exclure du set">⊘</button><button class="icon cov" title="Choisir une pochette">🖼</button></td></tr>`).join("")}</tbody></table>`
+      <td class="num"><button class="icon toset" title="Ajouter au set">＋</button><button class="icon force ${t.forced ? "on" : ""}" title="Forcer dans le set">★</button><button class="icon excl ${t.excluded ? "on" : ""}" title="Exclure du set">⊘</button><button class="icon cov" title="Choisir une pochette">🖼</button><button class="icon finder" title="Afficher dans le Finder">⌕</button></td></tr>`).join("")}</tbody></table>`
       : `<div class="empty"><b>Projet vide</b>Va dans « Importer » pour ajouter des morceaux.</div>`}`;
   $("#lQ").oninput = e => { S.filter = e.target.value; const pos = e.target.selectionStart; renderLibrary(); const i = $("#lQ"); i.focus(); i.setSelectionRange(pos, pos); };
   $$("th.sort").forEach(h => h.onclick = () => { S.sort = [h.dataset.k, S.sort[0] === h.dataset.k ? -S.sort[1] : 1]; renderLibrary(); });
@@ -302,6 +306,7 @@ function renderLibrary() {
   };
   $("#lKnown").onclick = async () => { const r = await job("/api/known/ai", { root: P.root }, "L'IA note les titres connus"); toast(`${r.rated} morceaux notés.`); refresh(); };
   $("#lAdd").onclick = () => go("import");
+  $("#lDir").onclick = () => api("/api/open", { path: `${P.root}/Tracks` });
   const tmap = byId();
   $$("tbody tr").forEach(tr => {
     const t = tmap[tr.dataset.id];
@@ -310,6 +315,7 @@ function renderLibrary() {
     $(".kn", tr).onchange = e => upd({ known: +e.target.value });
     $(".force", tr).onclick = () => upd({ forced: !t.forced, excluded: false });
     $(".excl", tr).onclick = () => upd({ excluded: !t.excluded, forced: false });
+    $(".finder", tr).onclick = () => reveal(trackPath(t));
     $(".cov", tr).onclick = async () => { const img = await pickImage(); if (img) { S.proj = await api("/api/covers/set", { root: P.root, id: t.id, image: img }); renderLibrary(); } };
     $(".toset", tr).onclick = () => addToSet(t);
     $$(".edit", tr).forEach(el => el.onclick = () => editTrack(t));
@@ -360,7 +366,7 @@ function renderSet() {
       <td>${t.remix ? `<span class="chip remix">remix</span>` : ""}${t.quiet ? `<span class="chip warn">volume faible</span>` : ""}</td>
       <td class="num"><button class="icon play" title="Écouter">▶</button><button class="icon mix" title="Pré-écouter la transition vers le suivant" ${i + 1 < P.set.length ? "" : "disabled"}>⇄</button>
       <button class="icon rep" title="Remplacer par un morceau compatible">↻</button><button class="icon lock ${i <= S.lock ? "on" : ""}" title="Garder le début du set jusqu'ici quand je regénère">🔒</button>
-      <button class="icon del" title="Retirer du set">✕</button></td></tr>
+      <button class="icon del" title="Retirer du set">✕</button><button class="icon finder" title="Afficher dans le Finder">⌕</button></td></tr>
       ${tr ? `<tr class="trans"><td></td><td colspan="9"><span class="tdot ${tr}">${{ ok: "● enchaînement OK", moyen: "● enchaînement possible", clash: "● clash de tonalité ou de tempo" }[tr]}</span></td></tr>` : ""}`;
   }).join("");
   const clashes = P.transitions.filter(x => x === "clash").length;
@@ -392,7 +398,7 @@ function renderSet() {
       <div class="row"><span class="spacer"></span><button class="btn small" id="ext">Recalculer la suite</button></div>
       <p class="hint" style="margin-top:8px">Même début que le set, puis les titres connus restants, puis le reste en vagues qui remontent à chaque fois.</p>
       ${P.blocks.slice(1).map(b => `<div class="block"><h3>${esc(b.name)} <span>${b.ids.length} morceaux · ${fmtH(b.ids.reduce((s, i) => s + (tm[i]?.play || 0), 0) / 60)}</span></h3>
-      <table><tbody>${b.ids.map(i => tm[i]).filter(Boolean).map(t => `<tr data-id="${t.id}"><td style="width:30px"><button class="icon play">▶</button></td><td class="name"><div class="t">${esc(t.artist)} — ${esc(t.title)}</div></td><td class="num" style="width:60px">${t.bpm}</td><td style="width:60px">${keyChip(t.camelot)}</td><td style="width:90px">${stars(t.known)}</td></tr>`).join("")}</tbody></table></div>`).join("")}</details>` : ""}`
+      <table><tbody>${b.ids.map(i => tm[i]).filter(Boolean).map(t => `<tr data-id="${t.id}"><td style="width:30px"><button class="icon play">▶</button></td><td class="name"><div class="t">${esc(t.artist)} — ${esc(t.title)}</div></td><td class="num" style="width:60px">${t.bpm}</td><td style="width:60px">${keyChip(t.camelot)}</td><td style="width:90px">${stars(t.known)}</td><td style="width:30px"><button class="icon finder" title="Afficher dans le Finder">⌕</button></td></tr>`).join("")}</tbody></table></div>`).join("")}</details>` : ""}`
       : `<div class="empty"><b>Pas encore de set</b>Règle la durée et le tempo, puis « Générer le set ».</div>`}`;
   $("#pSh").value = pr.shape; $("#pH").value = pr.strictness;
   $("#pD").oninput = e => $("#dV").textContent = fmtH(+e.target.value);
@@ -410,6 +416,7 @@ function renderSet() {
     const i = +tr.dataset.i, t = tm[P.set[i]];
     $(".play", tr).onclick = () => player.play(t);
     $(".mix", tr).onclick = () => player.transition(t, tm[P.set[i + 1]]);
+    $(".finder", tr).onclick = () => reveal(trackPath(t));
     $(".del", tr).onclick = () => { const s = [...P.set]; s.splice(i, 1); if (S.lock >= i) S.lock--; save(s); };
     $(".lock", tr).onclick = () => { S.lock = S.lock === i ? -1 : i; renderSet(); };
     $(".rep", tr).onclick = () => replaceDialog(i);
@@ -423,7 +430,10 @@ function renderSet() {
       const s = [...P.set]; const [m] = s.splice(from, 1); s.splice(i, 0, m); save(s);
     });
   });
-  $$(".block tr[data-id]").forEach(tr => $(".play", tr).onclick = () => player.play(tm[tr.dataset.id]));
+  $$(".block tr[data-id]").forEach(tr => {
+    $(".play", tr).onclick = () => player.play(tm[tr.dataset.id]);
+    $(".finder", tr).onclick = () => reveal(trackPath(tm[tr.dataset.id]));
+  });
 }
 
 async function renderArtists() {
