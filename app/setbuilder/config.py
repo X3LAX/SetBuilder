@@ -1,11 +1,14 @@
-"""Paths, settings and the API key (kept in the macOS keychain)."""
+"""Paths, settings and the API key (kept in the system keychain via keyring)."""
 import json
 import os
 import shutil
-import subprocess
+import sys
 from pathlib import Path
 
-SUPPORT = Path.home() / "Library" / "Application Support" / "SetBuilder"
+if sys.platform == "win32":
+    SUPPORT = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "SetBuilder"
+else:
+    SUPPORT = Path.home() / "Library" / "Application Support" / "SetBuilder"
 SUPPORT.mkdir(parents=True, exist_ok=True)
 SETTINGS_FILE = SUPPORT / "settings.json"
 CACHE_FILE = SUPPORT / "analysis-cache.json"
@@ -44,18 +47,28 @@ def save_settings(s):
 def get_api_key():
     if os.environ.get("ANTHROPIC_API_KEY"):
         return os.environ["ANTHROPIC_API_KEY"]
-    r = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-                       capture_output=True, text=True)
-    return r.stdout.strip() or None if r.returncode == 0 else None
+    try:
+        import keyring
+        return keyring.get_password(KEYCHAIN_SERVICE, "anthropic") or None
+    except Exception:  # noqa: BLE001 - no usable keyring backend
+        return None
 
 
 def set_api_key(key):
-    subprocess.run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE], capture_output=True)
+    import keyring
     if key:
-        subprocess.run(["security", "add-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "anthropic",
-                        "-w", key], check=True, capture_output=True)
+        keyring.set_password(KEYCHAIN_SERVICE, "anthropic", key)
+    else:
+        try:
+            keyring.delete_password(KEYCHAIN_SERVICE, "anthropic")
+        except keyring.errors.PasswordDeleteError:
+            pass
 
 
 def which(cmd):
-    return shutil.which(cmd) or next((p for p in (f"/opt/homebrew/bin/{cmd}", f"/usr/local/bin/{cmd}")
+    return shutil.which(cmd) or next((p for p in (f"/opt/homebrew/bin/{cmd}", f"/usr/local/bin/{cmd}",
+                                       *(os.path.join(os.environ.get(v, ""), *sub, cmd + ".exe")
+                                         for v, sub in (("ProgramFiles", ("nodejs",)),
+                                                        ("APPDATA", ("npm",)))
+                                         if os.environ.get(v)))
                                       if os.path.exists(p)), None)

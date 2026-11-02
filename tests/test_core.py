@@ -78,6 +78,26 @@ def test_beat_grid_keeps_first_beat_on_one():
     assert first[0] == 1 and beats[0][2] == 250 and beats[0][1] == 12000
 
 
+def test_librosa_backend():
+    """Forces the librosa backend on a real file (skipped when none is available) and compares with Essentia."""
+    import glob, importlib
+    files = sorted(glob.glob("/Users/borettialexander/Music/Latine/Tracks/**/*.mp3", recursive=True))
+    if not files:
+        return
+    from setbuilder import analysis
+    analysis.FORCE_LIBROSA = True
+    lib = analysis.analyze_file(files[0])
+    analysis.FORCE_LIBROSA = False
+    assert 100 <= lib["bpm"] <= 150 and lib["camelot"] in analysis.CAMELOT.values(), lib
+    try:
+        import essentia  # noqa: F401
+        ess = analysis.analyze_file(files[0])
+        print("  essentia:", ess["bpm"], ess["camelot"], round(ess["key_strength"], 2), "| librosa:", lib["bpm"], lib["camelot"],
+              round(lib["key_strength"], 2), "|", Path(files[0]).name)
+    except ImportError:
+        print("  librosa:", lib["bpm"], lib["camelot"])
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

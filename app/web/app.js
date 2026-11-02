@@ -100,7 +100,8 @@ function shortIssue(issues = []) {
   if (i.includes("erreur")) return "petites erreurs";
   return "à vérifier";
 }
-// Show a file selected in a Finder window.
+// Show a file selected in a Finder / Explorer window.
+const FM = () => (S.state && S.state.os === "windows") ? "l'Explorateur" : "le Finder";
 const reveal = path => api("/api/reveal", { path });
 const trackPath = t => `${S.proj.root}/${t.file}`;
 const byId = () => Object.fromEntries(S.proj.tracks.map(t => [t.id, t]));
@@ -187,7 +188,7 @@ function renderImport() {
         <button class="btn primary" id="iRun">Importer ${rows.filter(r => !r.skip).length} morceaux</button></div>
       <table><thead><tr><th style="width:28px"></th><th style="width:28px"></th><th>Fichier d'origine</th><th style="width:26%">Artiste</th><th style="width:34%">Titre</th><th>Durée</th><th>État</th></tr></thead>
       <tbody>${rows.map((r, i) => `<tr data-i="${i}">
-        <td><input type="checkbox" class="inc" ${r.skip ? "" : "checked"}></td><td class="num"><button class="icon pv" title="Écouter">▶</button><button class="icon finder" title="Afficher dans le Finder">⌕</button></td>
+        <td><input type="checkbox" class="inc" ${r.skip ? "" : "checked"}></td><td class="num"><button class="icon pv" title="Écouter">▶</button><button class="icon finder" title="Afficher dans ${FM()}">⌕</button></td>
         <td class="name"><div class="t" title="${esc(r.src)}">${esc(r.rel)}</div><div class="a">${esc(r.folder)}</div></td>
         <td><input type="text" class="ia" value="${esc(r.artist)}"></td><td><input type="text" class="it" value="${esc(r.title)}"></td>
         <td class="num muted">${fmt(r.duration)}</td>
@@ -278,7 +279,7 @@ function renderLibrary() {
       <td>${t.analysed ? eBar(t.energy) : ""}</td><td class="num muted">${fmt(t.duration)}</td>
       <td><select class="kn" title="Connu (0-10) — ${t.known_source}">${[...Array(11).keys()].map(k => `<option ${k === t.known ? "selected" : ""}>${k}</option>`).join("")}</select></td>
       <td>${flags(t)}${inSet.has(t.id) ? `<span class="chip ok">dans le set</span>` : ""}</td>
-      <td class="num"><button class="icon toset" title="Ajouter au set">＋</button><button class="icon force ${t.forced ? "on" : ""}" title="Forcer dans le set">★</button><button class="icon excl ${t.excluded ? "on" : ""}" title="Exclure du set">⊘</button><button class="icon cov" title="Choisir une pochette">🖼</button><button class="icon finder" title="Afficher dans le Finder">⌕</button></td></tr>`).join("")}</tbody></table>`
+      <td class="num"><button class="icon toset" title="Ajouter au set">＋</button><button class="icon force ${t.forced ? "on" : ""}" title="Forcer dans le set">★</button><button class="icon excl ${t.excluded ? "on" : ""}" title="Exclure du set">⊘</button><button class="icon cov" title="Choisir une pochette">🖼</button><button class="icon finder" title="Afficher dans ${FM()}">⌕</button></td></tr>`).join("")}</tbody></table>`
       : `<div class="empty"><b>Projet vide</b>Va dans « Importer » pour ajouter des morceaux.</div>`}`;
   $("#lQ").oninput = e => { S.filter = e.target.value; const pos = e.target.selectionStart; renderLibrary(); const i = $("#lQ"); i.focus(); i.setSelectionRange(pos, pos); };
   $$("th.sort").forEach(h => h.onclick = () => { S.sort = [h.dataset.k, S.sort[0] === h.dataset.k ? -S.sort[1] : 1]; renderLibrary(); });
@@ -366,7 +367,7 @@ function renderSet() {
       <td>${t.remix ? `<span class="chip remix">remix</span>` : ""}${t.quiet ? `<span class="chip warn">volume faible</span>` : ""}</td>
       <td class="num"><button class="icon play" title="Écouter">▶</button><button class="icon mix" title="Pré-écouter la transition vers le suivant" ${i + 1 < P.set.length ? "" : "disabled"}>⇄</button>
       <button class="icon rep" title="Remplacer par un morceau compatible">↻</button><button class="icon lock ${i <= S.lock ? "on" : ""}" title="Garder le début du set jusqu'ici lors d'une nouvelle génération">🔒</button>
-      <button class="icon del" title="Retirer du set">✕</button><button class="icon finder" title="Afficher dans le Finder">⌕</button></td></tr>
+      <button class="icon del" title="Retirer du set">✕</button><button class="icon finder" title="Afficher dans ${FM()}">⌕</button></td></tr>
       ${tr ? `<tr class="trans"><td></td><td colspan="9"><span class="tdot ${tr}">${{ ok: "● enchaînement OK", moyen: "● enchaînement possible", clash: "● clash de tonalité ou de tempo" }[tr]}</span></td></tr>` : ""}`;
   }).join("");
   const clashes = P.transitions.filter(x => x === "clash").length;
@@ -398,7 +399,7 @@ function renderSet() {
       <div class="row"><span class="spacer"></span><button class="btn small" id="ext">Recalculer la suite</button></div>
       <p class="hint" style="margin-top:8px">Même début que le set, puis les titres connus restants, puis le reste en vagues qui remontent à chaque fois.</p>
       ${P.blocks.slice(1).map(b => `<div class="block"><h3>${esc(b.name)} <span>${b.ids.length} morceaux · ${fmtH(b.ids.reduce((s, i) => s + (tm[i]?.play || 0), 0) / 60)}</span></h3>
-      <table><tbody>${b.ids.map(i => tm[i]).filter(Boolean).map(t => `<tr data-id="${t.id}"><td style="width:30px"><button class="icon play">▶</button></td><td class="name"><div class="t">${esc(t.artist)} — ${esc(t.title)}</div></td><td class="num" style="width:60px">${t.bpm}</td><td style="width:60px">${keyChip(t.camelot)}</td><td style="width:90px">${stars(t.known)}</td><td style="width:30px"><button class="icon finder" title="Afficher dans le Finder">⌕</button></td></tr>`).join("")}</tbody></table></div>`).join("")}</details>` : ""}`
+      <table><tbody>${b.ids.map(i => tm[i]).filter(Boolean).map(t => `<tr data-id="${t.id}"><td style="width:30px"><button class="icon play">▶</button></td><td class="name"><div class="t">${esc(t.artist)} — ${esc(t.title)}</div></td><td class="num" style="width:60px">${t.bpm}</td><td style="width:60px">${keyChip(t.camelot)}</td><td style="width:90px">${stars(t.known)}</td><td style="width:30px"><button class="icon finder" title="Afficher dans ${FM()}">⌕</button></td></tr>`).join("")}</tbody></table></div>`).join("")}</details>` : ""}`
       : `<div class="empty"><b>Pas encore de set</b>Règle la durée et le tempo, puis « Générer le set ».</div>`}`;
   $("#pSh").value = pr.shape; $("#pH").value = pr.strictness;
   $("#pD").oninput = e => $("#dV").textContent = fmtH(+e.target.value);
@@ -527,7 +528,7 @@ function renderExport() {
       <div class="panel"><h2>Rekordbox</h2>
         <p class="hint">Un fichier XML que Rekordbox importe avec tes playlists. Sans hot cues ni beatgrid : Rekordbox refait l'analyse (BPM et clé mesurés sont dans les commentaires).</p>
         <div class="params">
-          <label class="check"><input type="checkbox" id="xM" checked> XML pour ce Mac</label>
+          <label class="check"><input type="checkbox" id="xM" checked> XML pour cet ordinateur</label>
           <label class="check"><input type="checkbox" id="xW"> XML pour Windows</label>
           <label class="field" id="xWr" style="margin-left:24px">Dossier sur le PC (le projet « ${esc(P.name)} » sera dedans)<input type="text" id="xWroot" value="${esc(s.windows_root || "C:/DJ Music")}"></label>
           <label class="check"><input type="checkbox" id="xU" checked> Playlists .m3u8</label>
@@ -537,7 +538,7 @@ function renderExport() {
         <details class="guide"><summary>Comment l'importer dans Rekordbox</summary><ol class="steps">
           <li>Morceaux déjà dans ta Collection avec une vieille analyse : sélectionne-les › clic droit › <b>Supprimer de la collection</b> (les fichiers restent sur le disque).</li>
           <li>Préférences › <b>Vue</b> › Mise en page : coche <b>rekordbox xml</b>.</li>
-          <li>Préférences › <b>Avancé</b> › Base de données › rekordbox xml › <b>Bibliothèque importée</b> : choisis le XML Mac dans <code>${esc(P.root)}/Export</code>.</li>
+          <li>Préférences › <b>Avancé</b> › Base de données › rekordbox xml › <b>Bibliothèque importée</b> : choisis le XML (hors « Windows ») dans <code>${esc(P.root)}/Export</code>.</li>
           <li>Barre latérale › <b>rekordbox xml</b> › Playlists › <b>${esc(P.name)}</b> › clic droit sur chaque playlist › <b>Importer la playlist</b>.</li>
           <li>Après un nouvel export : icône <b>Actualiser</b> à côté de « rekordbox xml », supprime l'ancienne playlist, ré-importe. Si Rekordbox demande d'écraser les infos des morceaux : <b>Non</b>.</li>
           <li>Ne déplace pas le dossier <code>${esc(P.root)}</code> après l'import.</li></ol></details>
@@ -596,7 +597,7 @@ function renderExport() {
     if ($("#xW").checked) S.state = await api("/api/settings", { windows_root: $("#xWroot").value.trim() || "C:/DJ Music" });
     const r = await api("/api/export", { root: P.root, mac: $("#xM").checked, windows: $("#xW").checked, m3u: $("#xU").checked, html: $("#xH").checked });
     $("#xRes").innerHTML = `<div style="margin-top:14px">${r.files.map(f => `<div class="row" style="margin-bottom:6px"><span class="chip ok">créé</span><code>${esc(f.split("/").pop())}</code>
-      <button class="btn small" data-f="${esc(f)}" data-a="reveal">Afficher dans le Finder</button>${f.endsWith(".html") ? `<button class="btn small" data-f="${esc(f)}" data-a="open">Ouvrir</button>` : ""}</div>`).join("")}</div>`;
+      <button class="btn small" data-f="${esc(f)}" data-a="reveal">Afficher dans ${FM()}</button>${f.endsWith(".html") ? `<button class="btn small" data-f="${esc(f)}" data-a="open">Ouvrir</button>` : ""}</div>`).join("")}</div>`;
     $$("#xRes button").forEach(b => b.onclick = () => api(`/api/${b.dataset.a}`, { path: b.dataset.f }));
     toast("Export terminé.");
   };
@@ -631,7 +632,7 @@ function renderSoundcloud() {
       toast(`${r.count} morceaux téléchargés : vérifie les noms puis importe.`);
       go("import");
     } else {
-      $("#scRes").innerHTML = `<div class="row" style="margin-top:14px"><span class="chip ok">${r.count} morceaux</span><button class="btn small" id="scShow">Afficher dans le Finder</button></div>
+      $("#scRes").innerHTML = `<div class="row" style="margin-top:14px"><span class="chip ok">${r.count} morceaux</span><button class="btn small" id="scShow">Afficher dans ${FM()}</button></div>
         <div class="muted" style="margin-top:8px;font-size:12px">${r.files.map(f => esc(f.split("/").pop())).join("<br>")}</div>
         ${r.errors.length ? `<div style="color:var(--warn);margin-top:8px;font-size:12px">${r.errors.length} non téléchargés : ${esc(r.errors[0])}</div>` : ""}`;
       $("#scShow").onclick = () => api("/api/reveal", { path: r.files[0] });

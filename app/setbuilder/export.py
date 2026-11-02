@@ -6,8 +6,11 @@ from pathlib import Path
 from urllib.parse import quote
 
 
-def _location_mac(path):
-    return "file://localhost" + quote(str(path))
+def _location_local(path):
+    p = Path(path).as_posix()
+    if p.startswith("/"):
+        return "file://localhost" + quote(p)
+    return "file://localhost/" + quote(p, safe="/:")   # C:/Users/...
 
 
 def _location_windows(path, project_root, windows_root):
@@ -26,7 +29,7 @@ def rekordbox_xml(project, tracks, playlists, out, windows_root=None):
         num[t["id"]] = str(n)
         p = project.root / t["file"]
         title, artist = t["title"] or p.stem, t["artist"] or ""
-        loc = (_location_windows(p, project.root, windows_root) if windows_root else _location_mac(p))
+        loc = (_location_windows(p, project.root, windows_root) if windows_root else _location_local(p))
         attrs = {
             "TrackID": str(n), "Name": title, "Artist": artist, "Album": project.data["name"],
             "Genre": t.get("genre") or "", "Kind": t.get("kind") or "", "Size": str(p.stat().st_size),

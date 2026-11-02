@@ -15,6 +15,7 @@ import datetime
 import shutil
 import struct
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -298,10 +299,8 @@ def _waveforms(audio, sr=44100):
 
 
 def write_anlz(dat_path, audio_path_on_stick, bpm, first_beat, duration, audio_file):
-    import essentia
-    essentia.log.warningActive = False
-    import essentia.standard as es
-    audio = es.MonoLoader(filename=str(audio_file), sampleRate=44100)()
+    from .audio import load_mono
+    audio = load_mono(audio_file, 44100)
     pwav, pwv2, pwv3 = _waveforms(audio)
     grid = _beat_grid(bpm, first_beat, duration)
     dat_path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,7 +391,7 @@ def export(volume, project_name, tracks_by_id, playlists, replace=False, progres
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(db)
     # macOS leaves AppleDouble "._" files on FAT/exFAT sticks; players can list them as broken tracks
-    for top in ("PIONEER", "Contents"):
+    for top in ("PIONEER", "Contents") if sys.platform == "darwin" else ():
         subprocess.run(["dot_clean", "-m", str(vol / top)], capture_output=True)
         for junk in [vol / f"._{top}", *(vol / top).rglob("._*")]:
             if junk.is_file():

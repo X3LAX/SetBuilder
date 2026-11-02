@@ -37,6 +37,20 @@ cd SetBuilder
 L'app est installée dans `~/Applications/SetBuilder.app` (Spotlight : « SetBuilder »).
 Pour l'IA par abonnement : `./install.sh --with-claude` (et/ou `brew install --cask codex`), puis dans l'app **Réglages › Connecter**.
 
+## Windows
+
+Windows 10/11, Python 3.11+ (python.org) ; ffmpeg est installé automatiquement via `winget` si absent.
+
+```powershell
+git clone https://github.com/X3LAX/SetBuilder.git
+cd SetBuilder
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+L'app est installée dans `%LOCALAPPDATA%\SetBuilder` avec des raccourcis dans le menu Démarrer et sur le Bureau.
+Option : `-WithClaude` installe Claude Code (npm requis) pour l'IA par abonnement.
+Sur Windows, l'analyse BPM/tonalité utilise librosa (un peu moins précis qu'Essentia sur Mac).
+
 Pour Spotify : crée une app gratuite sur [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) avec la Redirect URI `http://127.0.0.1:47615/api/spotify/callback`, puis colle son Client ID dans **Réglages › Spotify**.
 
 Mise à jour : `git pull && ./install.sh`.

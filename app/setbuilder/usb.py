@@ -5,6 +5,7 @@ hot cues or pre-analysed waveforms: that needs a rekordbox export (see the Expor
 import plistlib
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from .config import which
@@ -13,8 +14,34 @@ from .library import safe_filename
 OLD_PLAYER_UNSUPPORTED = {".flac"}   # CDJ-2000NXS, CDJ-900NXS, XDJ-RX... (NXS2 / 3000 / XDJ-RX2+ read FLAC)
 
 
+def _list_volumes_windows():
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    mask, out = k32.GetLogicalDrives(), []
+    for i in range(26):
+        if not mask & (1 << i):
+            continue
+        root = f"{chr(65 + i)}:\\"
+        if k32.GetDriveTypeW(root) != 2:   # DRIVE_REMOVABLE
+            continue
+        label, fsn = ctypes.create_unicode_buffer(261), ctypes.create_unicode_buffer(261)
+        if not k32.GetVolumeInformationW(root, label, 261, None, None, None, fsn, 261):
+            continue
+        try:
+            du = shutil.disk_usage(root)
+        except OSError:
+            continue
+        fs = fsn.value.lower()
+        out.append({"path": root, "name": label.value or root[:2], "fs": fs, "free": du.free, "size": du.total,
+                    "pioneer_ok": fs in ("fat32", "fat", "exfat"),
+                    "has_rekordbox": (Path(root) / "PIONEER").exists()})
+    return out
+
+
 def list_volumes():
     """External, writable volumes."""
+    if sys.platform == "win32":
+        return _list_volumes_windows()
     out = []
     for v in sorted(Path("/Volumes").iterdir()):
         try:
@@ -89,7 +116,8 @@ def export(volume, project_name, tracks_by_id, playlists, convert_flac=False, pr
     (base / "Tracklist.txt").write_text("\n".join(
         f"[{folder}]\n" + "\n".join(name for _, name in files) + "\n" for folder, files in jobs), encoding="utf-8")
     # macOS leaves AppleDouble "._" files on FAT sticks; some players list them as broken tracks
-    subprocess.run(["dot_clean", "-m", str(vol / "SetBuilder")], capture_output=True)
+    if sys.platform == "darwin":
+        subprocess.run(["dot_clean", "-m", str(vol / "SetBuilder")], capture_output=True)
     for junk in [vol / "._SetBuilder", *(vol / "SetBuilder").rglob("._*")]:
         if junk.is_file():
             junk.unlink()
@@ -97,6 +125,13 @@ def export(volume, project_name, tracks_by_id, playlists, convert_flac=False, pr
 
 
 def eject(volume):
+    if sys.platform == "win32":
+        drive = volume.rstrip("\\/")[:2]
+        ps = f"(New-Object -ComObject Shell.Application).Namespace(17).ParseName('{drive}').InvokeVerb('Eject')"
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise ValueError(f"Éjection impossible : {(r.stderr or r.stdout).strip()[:150]}")
+        return
     r = subprocess.run(["diskutil", "eject", volume], capture_output=True, text=True)
     if r.returncode != 0:
         raise ValueError(f"Éjection impossible : {(r.stderr or r.stdout).strip()[:150]}")

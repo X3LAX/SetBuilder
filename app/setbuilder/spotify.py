@@ -26,21 +26,25 @@ class SpotifyError(Exception):
     pass
 
 
-# ------------------------------------------------------------ tokens (macOS keychain)
+# ------------------------------------------------------------ tokens (system keychain)
 
 def _load_token():
-    r = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN, "-w"], capture_output=True, text=True)
     try:
-        return json.loads(r.stdout) if r.returncode == 0 else None
-    except ValueError:
+        import keyring
+        return json.loads(keyring.get_password(KEYCHAIN, "spotify") or "null")
+    except Exception:  # noqa: BLE001 - missing entry, bad JSON or no keyring backend
         return None
 
 
 def _save_token(tok):
-    subprocess.run(["security", "delete-generic-password", "-s", KEYCHAIN], capture_output=True)
+    import keyring
     if tok:
-        subprocess.run(["security", "add-generic-password", "-s", KEYCHAIN, "-a", "spotify", "-w", json.dumps(tok)],
-                       check=True, capture_output=True)
+        keyring.set_password(KEYCHAIN, "spotify", json.dumps(tok))
+    else:
+        try:
+            keyring.delete_password(KEYCHAIN, "spotify")
+        except keyring.errors.PasswordDeleteError:
+            pass
 
 
 def logout():

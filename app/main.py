@@ -92,14 +92,15 @@ def main():
     if "--headless" in sys.argv:
         print(f"http://127.0.0.1:{port}", flush=True)
         threading.Event().wait()
-    try:  # show "SetBuilder" and its icon in the Dock and menu bar instead of "Python"
-        from AppKit import NSApplication, NSImage
-        from Foundation import NSBundle
-        NSBundle.mainBundle().infoDictionary()["CFBundleName"] = "SetBuilder"
-        icon = Path(__file__).resolve().parent.parent / "AppIcon.icns"
-        NSApplication.sharedApplication().setApplicationIconImage_(NSImage.alloc().initWithContentsOfFile_(str(icon)))
-    except Exception:
-        pass
+    if sys.platform == "darwin":
+        try:  # show "SetBuilder" and its icon in the Dock and menu bar instead of "Python"
+            from AppKit import NSApplication, NSImage
+            from Foundation import NSBundle
+            NSBundle.mainBundle().infoDictionary()["CFBundleName"] = "SetBuilder"
+            icon = Path(__file__).resolve().parent.parent / "AppIcon.icns"
+            NSApplication.sharedApplication().setApplicationIconImage_(NSImage.alloc().initWithContentsOfFile_(str(icon)))
+        except Exception:
+            pass
     import webview
     api = Api()
     api.window = webview.create_window("SetBuilder", f"http://127.0.0.1:{port}/", js_api=api,

@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import ai, analysis, covers, export, library, planner, quality, rekordbox_usb, soundcloud, spotify, usb
+from .platform_utils import OS_NAME, open_path, reveal as reveal_path, run_in_terminal
 from .config import get_api_key, load_settings, save_settings, set_api_key
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -182,13 +183,12 @@ def state():
     s = load_settings()
     a = ai.status()
     return {"settings": s, "has_key": a["has_key"], "ai": a, "projects": library.list_projects(s),
-            "default_root": str(library.MUSIC)}
+            "default_root": str(library.MUSIC), "os": OS_NAME}
 
 
 def _terminal(command):
-    """Run a command in a visible Terminal window (sign-ins need the user)."""
-    script = f'tell application "Terminal" to do script "{command}"\ntell application "Terminal" to activate'
-    subprocess.run(["osascript", "-e", script])
+    """Run a command in a visible terminal window (sign-ins need the user)."""
+    run_in_terminal(command)
 
 
 AI_TOOLS = {
@@ -649,7 +649,7 @@ def spotify_login():
     if not cid:
         raise HTTPException(400, "Colle d'abord le Client ID de ton app Spotify (Réglages).")
     url = spotify.login_url(cid, SPOTIFY_REDIRECT.format(port=PORT["value"]))
-    subprocess.run(["open", url])
+    open_path(url)
     return {"url": url}
 
 
@@ -882,7 +882,7 @@ def do_export(body: dict):
     out.mkdir(exist_ok=True)
     files = []
     if body.get("mac", True):
-        f = out / f"{name} - Rekordbox Mac.xml"; export.rekordbox_xml(p, ts, playlists, f); files.append(str(f))
+        f = out / f"{name} - Rekordbox.xml"; export.rekordbox_xml(p, ts, playlists, f); files.append(str(f))
     if body.get("windows"):
         f = out / f"{name} - Rekordbox Windows.xml"
         export.rekordbox_xml(p, ts, playlists, f, windows_root=s["windows_root"]); files.append(str(f))
@@ -901,13 +901,13 @@ def do_export(body: dict):
 def reveal(body: dict):
     if not Path(body["path"]).exists():
         raise HTTPException(404, "Fichier introuvable : il a peut-être été déplacé ou supprimé.")
-    subprocess.run(["open", "-R", body["path"]])
+    reveal_path(body["path"])
     return {"ok": True}
 
 
 @app.post("/api/open")
 def open_file(body: dict):
-    subprocess.run(["open", body["path"]])
+    open_path(body["path"])
     return {"ok": True}
 
 
