@@ -9,11 +9,15 @@ Application Mac pour préparer un set DJ pour Rekordbox à partir d'un dossier d
 - **Générateur de set** : durée visée, BPM de départ/arrivée, montée progressive, enchaînements harmoniques, priorité aux remix de titres connus. Édition par glisser-déposer, remplacement par un morceau compatible, verrouillage du début, pré-écoute des transitions.
 - **Set étendu** : le set, puis les titres connus restants, puis le reste en vagues qui remontent en tempo.
 - **Export Rekordbox** : XML Mac et Windows sans hot cues ni beatgrid (Rekordbox refait l'analyse), playlists `.m3u8`, tracklist imprimable.
-- **Playlist Spotify de morceaux similaires** : à partir du set, l'app trouve des morceaux du même style et tempo (IA et/ou artistes similaires Deezer) et crée la playlist sur ton compte Spotify.
+- **Clé USB directe pour CDJ / XDJ** : copie le set (et la suite) sur une clé FAT32 / exFAT, un dossier par playlist, morceaux numérotés dans l'ordre, lisible via **FOLDER** sur les lecteurs Pioneer. Conversion FLAC → AIFF en option pour les anciens lecteurs. (Pour les grilles et hot cues, passer par l'export USB de Rekordbox.)
+- **Artistes à mettre en avant, par set** : après l'analyse, choisis les artistes parmi ceux de tes morceaux et classe-les par glisser-déposer.
+- **Spotify, morceaux similaires** : à partir du set ou d'une de tes playlists Spotify, l'app trouve des morceaux du même style (IA et/ou artistes similaires Deezer) et les ajoute à cette playlist ou à une nouvelle.
 - **IA optionnelle et économe** : seulement pour corriger les noms illisibles, noter si un titre est connu et proposer des morceaux similaires. L'analyse audio, les pochettes et le set n'utilisent pas l'IA. Seules les lignes douteuses sont envoyées, avec le modèle le plus léger, et chaque réponse est mémorisée. Trois connexions possibles :
   - ton **abonnement Claude Pro/Max**, via [Claude Code](https://claude.com/product/claude-code) ;
   - ton **abonnement ChatGPT**, via [Codex](https://github.com/openai/codex) ;
-  - ou une **clé API** Anthropic (modèle Haiku, facturée à l'usage).
+  - ou une **clé API** Anthropic (facturée à l'usage).
+
+  Le modèle se règle par tâche : Haiku (économique) pour les noms et les notes, Sonnet (équilibré) pour les morceaux similaires, Opus en option.
 
 ## Installation
 
@@ -57,6 +61,7 @@ python3 tests/test_core.py                                   # tests rapides (n�
 - `app/setbuilder/soundcloud.py` : téléchargements SoundCloud
 - `app/setbuilder/spotify.py` : connexion Spotify, recherche, playlists, similaires Deezer
 - `app/setbuilder/export.py` : XML Rekordbox, m3u8, tracklist
+- `app/setbuilder/usb.py` : copie sur clé USB pour CDJ / XDJ (mode dossiers)
 - `app/setbuilder/server.py` + `app/web/` : interface
 
 Journal en cas de problème : `~/Library/Logs/SetBuilder.log`.

@@ -326,9 +326,13 @@ function renderSet() {
         <div class="stat"><b>${P.set.filter(i => tm[i].known >= pr.known_min).length}</b><span>titres connus</span></div>
         <div class="stat"><b style="color:${clashes ? "var(--bad)" : "var(--ok)"}">${clashes}</b><span>clash</span></div></div></div>
     </div>
+    <div class="panel" id="artPanel"></div>
     ${P.set.length ? `<div class="panel"><table><thead><tr><th>#</th><th>Début</th><th></th><th>Morceau</th><th>BPM</th><th>Clé</th><th>Énergie</th><th>Connu</th><th></th><th></th></tr></thead><tbody id="setBody">${rows}</tbody></table></div>
     <div class="panel"><h2>Spotify : playlist de morceaux similaires</h2>
-      <p class="hint">Trouve des morceaux qui iraient dans ce set (même style, tempo proche) et crée une playlist sur ton Spotify pour les découvrir. Source : l'IA (un seul appel) et/ou Deezer (artistes similaires, sans IA). Les morceaux déjà dans ta bibliothèque sont ignorés.</p>
+      <p class="hint">Trouve des morceaux du même style et d'un tempo proche, à partir de ce set ou d'une de tes playlists Spotify, et les ajoute sur ton Spotify. Source : l'IA (un seul appel) et/ou Deezer (artistes similaires, sans IA). Les morceaux déjà présents sont ignorés.</p>
+      <div class="row" style="margin-bottom:10px"><label class="field">Partir de<select id="spFrom"><option value="set">Ce set</option><option value="pl">Une playlist Spotify</option></select></label>
+        <label class="field" id="spUrlL" style="display:none;flex:1;min-width:280px">Lien de la playlist<input type="text" id="spUrl" placeholder="https://open.spotify.com/playlist/…"></label>
+        <label class="field" id="spTgtL" style="display:none">Ajouter dans<select id="spTgt"><option value="same">Cette même playlist</option><option value="new">Une nouvelle playlist</option></select></label></div>
       <div class="row"><label class="field">Nombre<select id="spN"><option>20</option><option selected>40</option><option>60</option><option>100</option></select></label>
         <label class="field">Source<select id="spSrc"><option value="auto">IA + Deezer</option><option value="ia">IA seulement</option><option value="deezer">Deezer seulement (sans IA)</option></select></label>
         <label class="check" style="margin-top:18px"><input type="checkbox" id="spSet"> Inclure les morceaux du set</label>
@@ -348,16 +352,25 @@ function renderSet() {
     toast(`Set de ${S.proj.set.length} morceaux (${fmtH(S.proj.set_minutes)}).`); renderSet();
   };
   if ($("#unlock")) $("#unlock").onclick = e => { e.preventDefault(); S.lock = -1; renderSet(); };
+  if ($("#spFrom")) $("#spFrom").onchange = e => {
+    const pl = e.target.value === "pl";
+    $("#spUrlL").style.display = $("#spTgtL").style.display = pl ? "" : "none";
+    $("#spSet").closest("label").style.display = pl ? "none" : "";
+  };
   if ($("#spGo")) $("#spGo").onclick = async () => {
     const st = await api("/api/spotify/status");
     if (!st.connected) { toast("Connecte d'abord Spotify (Réglages › Spotify).", true); return; }
-    const r = await job("/api/spotify/similar", { root: P.root, count: +$("#spN").value, source: $("#spSrc").value, include_set: $("#spSet").checked, public: $("#spPub").checked }, "Playlist Spotify");
-    $("#spRes").innerHTML = `<div class="row" style="margin-top:12px"><span class="chip ok">${r.total} morceaux</span><button class="btn small" id="spOpen">Ouvrir dans Spotify</button></div>
+    const fromPl = $("#spFrom").value === "pl", url = $("#spUrl").value.trim();
+    if (fromPl && !url) return toast("Colle le lien de ta playlist Spotify.", true);
+    const r = await job("/api/spotify/similar", { root: P.root, count: +$("#spN").value, source: $("#spSrc").value, include_set: $("#spSet").checked,
+      public: $("#spPub").checked, playlist: fromPl ? url : "", target: $("#spTgt").value }, "Playlist Spotify");
+    $("#spRes").innerHTML = `<div class="row" style="margin-top:12px"><span class="chip ok">${r.similar.length} morceaux ajoutés</span><button class="btn small" id="spOpen">Ouvrir dans Spotify</button></div>
       <div class="muted" style="margin-top:8px;font-size:12px">${r.similar.slice(0, 60).map(esc).join(" · ")}</div>`;
     $("#spOpen").onclick = () => api("/api/open", { path: r.url });
   };
   if ($("#ext")) $("#ext").onclick = async () => { S.proj = await job("/api/set/extend", { root: P.root }, "Calcul de la suite"); renderSet(); };
   drawChart(pr);
+  renderArtists();
   const save = async set => { S.proj = await api("/api/set/save", { root: P.root, set }); renderSet(); };
   $$("#setBody tr[data-i]").forEach(tr => {
     const i = +tr.dataset.i, t = tm[P.set[i]];
@@ -377,6 +390,43 @@ function renderSet() {
     });
   });
   $$(".block tr[data-id]").forEach(tr => $(".play", tr).onclick = () => player.play(tm[tr.dataset.id]));
+}
+
+async function renderArtists() {
+  const box = $("#artPanel"); if (!box) return;
+  const P = S.proj;
+  const data = await api(`/api/artists?root=${encodeURIComponent(P.root)}`);
+  let chosen = data.chosen.slice();
+  const draw = () => {
+    const q = ($("#artQ")?.value || "").toLowerCase();
+    const pool = data.all.filter(a => !chosen.some(c => c.toLowerCase() === a.name.toLowerCase()) && (!q || a.name.toLowerCase().includes(q)));
+    box.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 style="margin:0">Artistes à mettre en avant</h2>
+        <span class="muted">pour ce set · clique pour ajouter, glisse pour classer (le 1er compte le plus)</span><span class="spacer"></span>
+        ${chosen.length ? `<button class="btn small" id="artClr">Tout retirer</button>` : ""}</div>
+      <ol class="achosen">${chosen.map((a, i) => `<li draggable="true" data-i="${i}"><b>${i + 1}</b>${esc(a)}<button class="icon" data-rm="${i}" title="Retirer">✕</button></li>`).join("") || `<li class="muted empty-li">Aucun artiste choisi : le set suit l'IA (titres connus) ou seulement le tempo et l'harmonie.</li>`}</ol>
+      <input type="text" id="artQ" placeholder="Filtrer les ${data.all.length} artistes…" value="${esc(q)}" style="width:260px;margin:10px 0 8px">
+      <div class="apool">${pool.map(a => `<button class="chip achip" data-n="${esc(a.name)}">${esc(a.name)} <span>${a.count}</span></button>`).join("")}</div>`;
+    const qi = $("#artQ"); qi.oninput = () => { const pos = qi.selectionStart; draw(); const n = $("#artQ"); n.focus(); n.setSelectionRange(pos, pos); };
+    $$(".achip", box).forEach(b => b.onclick = () => { chosen.push(b.dataset.n); commit(); });
+    $$("[data-rm]", box).forEach(b => b.onclick = () => { chosen.splice(+b.dataset.rm, 1); commit(); });
+    if ($("#artClr")) $("#artClr").onclick = () => { chosen = []; commit(); };
+    $$(".achosen li[draggable]", box).forEach(li => {
+      li.addEventListener("dragstart", e => e.dataTransfer.setData("text/plain", li.dataset.i));
+      li.addEventListener("dragover", e => { e.preventDefault(); li.classList.add("over"); });
+      li.addEventListener("dragleave", () => li.classList.remove("over"));
+      li.addEventListener("drop", e => { e.preventDefault(); const f = +e.dataTransfer.getData("text/plain"), t = +li.dataset.i; const [m] = chosen.splice(f, 1); chosen.splice(t, 0, m); commit(); });
+    });
+  };
+  let timer = null;
+  const commit = () => {
+    draw();
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      S.proj = await api("/api/artists", { root: P.root, chosen });
+      toast("Artistes enregistrés. Clique sur « Regénérer le set » pour les appliquer.");
+    }, 500);
+  };
+  draw();
 }
 
 async function replaceDialog(i) {
@@ -438,6 +488,17 @@ function renderExport() {
         <label class="check"><input type="checkbox" id="xH" checked> Tracklist imprimable (BPM, clé, heure de passage)</label>
         <div><button class="btn primary" id="xGo">Exporter</button></div></div>
       <div id="xRes"></div></div>
+    <div class="panel"><h2>Clé USB pour CDJ / XDJ (direct, sans Rekordbox)</h2>
+      <p class="hint">Copie le set sur la clé, un dossier par playlist, morceaux numérotés dans l'ordre. Sur le lecteur : <b>USB › FOLDER › SetBuilder</b>. Les lecteurs lisent les fichiers mais sans beatgrid, hot cues ni forme d'onde pré-analysée (le BPM peut manquer selon le modèle). Pour une clé complète, utilise l'export Rekordbox ci-dessous. Clé en <b>FAT32</b> ou <b>exFAT</b>.</p>
+      <div id="usbList" class="muted">Recherche des clés…</div>
+      <div class="row" style="margin-top:10px"><label class="check"><input type="checkbox" id="uExt" checked> Ajouter la suite (set étendu)</label>
+        <label class="check"><input type="checkbox" id="uFlac"> Convertir les FLAC en AIFF (anciens lecteurs : CDJ-2000NXS, CDJ-900NXS, XDJ-RX…)</label></div>
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="uGo" disabled>Copier sur la clé</button><button class="btn" id="uRef">Actualiser</button><button class="btn" id="uEj" disabled>Éjecter</button></div>
+      <div id="uRes"></div></div>
+    <div class="panel"><h2>Clé USB complète via Rekordbox (grilles, hot cues, formes d'onde)</h2><ol class="steps">
+      <li>Importe le XML dans Rekordbox (étapes ci-dessous) et laisse Rekordbox analyser les morceaux.</li>
+      <li>Branche la clé : elle apparaît sous <b>Devices</b> dans la barre latérale de Rekordbox (mode Export).</li>
+      <li>Glisse la playlist importée sur la clé. Rekordbox copie les fichiers et sa base (dossier <code>PIONEER</code>) lisible par tous les CDJ / XDJ.</li></ol></div>
     <div class="panel"><h2>Importer dans Rekordbox (Mac)</h2><ol class="steps">
       <li>Le XML ne contient <b>ni hot cues, ni beatgrid</b> : Rekordbox refait toute l'analyse. BPM et clé mesurés sont dans le champ <i>Commentaires</i>.</li>
       <li>Si ces morceaux sont déjà dans ta Collection avec une vieille analyse : sélectionne-les › clic droit › <b>Supprimer de la collection</b> (les fichiers restent sur le disque).</li>
@@ -447,6 +508,24 @@ function renderExport() {
       <li>Après un nouvel export : clique sur l'icône <b>Actualiser</b> à côté de « rekordbox xml », supprime l'ancienne playlist dans tes playlists, puis ré-importe. Si Rekordbox demande d'écraser les infos des morceaux, réponds <b>Non</b>.</li>
       <li>Ne déplace pas le dossier <code>${esc(P.root)}</code> après l'import, sinon Rekordbox ne retrouve plus les fichiers.</li></ol></div>`;
   const sync = () => $("#xWr").style.display = $("#xW").checked ? "" : "none"; sync(); $("#xW").onchange = sync;
+  const gb = b => `${(b / 1e9).toFixed(1)} Go`;
+  const loadUsb = async () => {
+    const { volumes } = await api("/api/usb/volumes");
+    $("#usbList").innerHTML = volumes.length ? volumes.map((v, i) => `<label class="check" style="margin:4px 0"><input type="radio" name="usbv" value="${esc(v.path)}" ${i ? "" : "checked"}>
+        <b>${esc(v.name)}</b> <span class="muted">${v.fs.toUpperCase() || "?"} · ${gb(v.free)} libres sur ${gb(v.size)}</span>
+        ${v.pioneer_ok ? "" : `<span class="chip bad">format non lu par les CDJ : reformate en FAT32 ou exFAT</span>`}${v.has_rekordbox ? `<span class="chip ok">contient déjà une clé Rekordbox (gardée)</span>` : ""}</label>`).join("")
+      : "Aucune clé USB détectée. Branche-la puis clique sur « Actualiser ».";
+    $("#uGo").disabled = $("#uEj").disabled = !volumes.length || !P.set.length;
+    if (!P.set.length) $("#usbList").insertAdjacentHTML("beforeend", `<div style="color:var(--warn);margin-top:6px">Génère d'abord un set.</div>`);
+  };
+  const vol = () => $("input[name=usbv]:checked")?.value;
+  loadUsb(); $("#uRef").onclick = loadUsb;
+  $("#uGo").onclick = async () => {
+    const r = await job("/api/usb/export", { root: P.root, volume: vol(), extended: $("#uExt").checked, convert_flac: $("#uFlac").checked }, "Copie sur la clé USB");
+    $("#uRes").innerHTML = `<div class="row" style="margin-top:12px"><span class="chip ok">${r.total} morceaux sur la clé</span><span class="muted">${r.copied} copiés (les autres y étaient déjà) · ${esc(r.folder)}</span></div>`;
+    toast("Clé prête. Pense à l'éjecter avant de la retirer.");
+  };
+  $("#uEj").onclick = async () => { await api("/api/usb/eject", { volume: vol() }); toast("Clé éjectée, tu peux la retirer."); loadUsb(); };
   $("#xGo").onclick = async () => {
     if ($("#xW").checked) S.state = await api("/api/settings", { windows_root: $("#xWroot").value.trim() || "C:/DJ Music" });
     const r = await api("/api/export", { root: P.root, mac: $("#xM").checked, windows: $("#xW").checked, m3u: $("#xU").checked, html: $("#xH").checked });
@@ -476,6 +555,12 @@ async function renderSettings() {
       <label class="field" style="max-width:460px">Utiliser<select id="sProv">
         <option value="auto">Automatique (Claude, sinon Codex, sinon clé API)</option>
         <option value="claude">Mon abonnement Claude</option><option value="codex">Mon abonnement ChatGPT (Codex)</option><option value="api">Une clé API Claude</option></select></label>
+      <div class="row" style="margin-top:12px;align-items:flex-start">
+        <label class="field" style="width:300px">Noms et « titres connus »<select id="sLvN">
+          <option value="eco">Économique — Haiku (recommandé)</option><option value="equilibre">Équilibré — Sonnet</option><option value="max">Maximum — Opus</option></select></label>
+        <label class="field" style="width:300px">Morceaux similaires (Spotify)<select id="sLvS">
+          <option value="eco">Économique — Haiku</option><option value="equilibre">Équilibré — Sonnet (recommandé)</option><option value="max">Maximum — Opus</option></select></label></div>
+      <p class="hint" style="margin:8px 0 0">Les noms et notes sont des tâches simples : Haiku suffit. Pour les morceaux similaires, il faut une vraie culture musicale : Sonnet invente moins de titres. Avec Codex, le niveau règle l'effort de réflexion (modèle ci-dessous).</p>
       <div class="muted" style="margin-top:8px">État : ${ai.ok ? `<span class="chip ok">prête</span> via ${esc(ai.label)}` : `<span class="chip warn">non configurée</span>`}</div></div>
     ${tool("claude", "Abonnement Claude (Pro / Max)", ai.claude, `<p class="hint">Passe par Claude Code connecté à ton compte : compté dans ton forfait, rien à payer en plus.</p>`)}
     ${tool("codex", "Abonnement ChatGPT (Codex)", ai.codex, `<p class="hint">Passe par Codex connecté à ton compte ChatGPT : compté dans ton forfait. Un peu plus lent (≈15 s par lot).</p>
@@ -495,13 +580,15 @@ async function renderSettings() {
         ${sp.connected ? `<span class="chip ok">connecté : ${esc(sp.name)}</span><button class="btn" id="sSpOut">Déconnecter</button>` : `<button class="btn primary" id="sSpIn" ${s.spotify_client_id ? "" : "disabled"}>Connecter Spotify</button>`}
         <button class="btn sRef">Actualiser</button></div>
       ${sp.error ? `<div class="muted" style="margin-top:8px;color:var(--warn)">${esc(sp.error)}</div>` : ""}</div>
-    <div class="panel"><h2>Artistes connus (priorité dans le set)</h2>
-      <p class="hint">Un artiste par ligne, avec une note de 0 à 10. Utilisé quand l'IA n'a pas noté le morceau. Bad Bunny = 10 → ses remix passent en premier.</p>
-      <textarea id="sArt" rows="12" style="width:420px">${Object.entries(s.known_artists).map(([a, w]) => `${a} = ${w}`).join("\n")}</textarea>
-      <div class="params" style="max-width:420px;margin-top:12px"><label class="field">Bonus remix : <b id="rbV">${s.remix_bonus}</b><input type="range" id="sRB" min="0" max="3" step="0.25" value="${s.remix_bonus}"></label></div>
+    <div class="panel"><h2>Priorités du set</h2>
+      <p class="hint">Les artistes à mettre en avant se choisissent maintenant pour chaque set, dans l'écran « Set », parmi les artistes de tes morceaux.</p>
+      <div class="params" style="max-width:420px"><label class="field">Bonus remix : <b id="rbV">${s.remix_bonus}</b><input type="range" id="sRB" min="0" max="3" step="0.25" value="${s.remix_bonus}"></label></div>
       <button class="btn primary" id="sSave" style="margin-top:8px">Enregistrer</button></div>`;
   const prov = s.ai_provider === "subscription" ? "claude" : (s.ai_provider || "auto");
   $("#sProv").value = prov;
+  $("#sLvN").value = s.ai_level_names || "eco"; $("#sLvS").value = s.ai_level_similar || "equilibre";
+  $("#sLvN").onchange = e => api("/api/settings", { ai_level_names: e.target.value }).then(() => toast("Enregistré."));
+  $("#sLvS").onchange = e => api("/api/settings", { ai_level_similar: e.target.value }).then(() => toast("Enregistré."));
   $("#sProv").onchange = async e => { await api("/api/settings", { ai_provider: e.target.value }); renderSettings(); };
   $$(".sRef").forEach(b => b.onclick = () => renderSettings());
   $$("[data-act]").forEach(b => b.onclick = async () => {
@@ -519,9 +606,7 @@ async function renderSettings() {
   if ($("#sSpOut")) $("#sSpOut").onclick = async () => { await api("/api/spotify/logout", {}); renderSettings(); };
   $("#sRB").oninput = e => $("#rbV").textContent = e.target.value;
   $("#sSave").onclick = async () => {
-    const known = {};
-    $("#sArt").value.split("\n").forEach(l => { const m = l.match(/^\s*(.+?)\s*[=:]\s*(\d+)\s*$/); if (m) known[m[1]] = Math.min(10, +m[2]); });
-    S.state = await api("/api/settings", { known_artists: known, remix_bonus: +$("#sRB").value });
+    S.state = await api("/api/settings", { remix_bonus: +$("#sRB").value });
     if (S.proj) await loadProject(S.proj.root);
     toast("Réglages enregistrés.");
   };

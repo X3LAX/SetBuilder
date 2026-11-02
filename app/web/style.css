@@ -128,3 +128,14 @@ code { background: var(--panel2); padding: 1px 6px; border-radius: 4px; }
   td.name { max-width: 220px; }
   .stat b { font-size: 17px; }
 }
+
+.achosen { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.achosen li { display: flex; align-items: center; gap: 7px; background: #3a2416; color: #ffd2b0; border: 1px solid #5a3820;
+  border-radius: 16px; padding: 3px 4px 3px 4px; cursor: grab; }
+.achosen li b { background: var(--accent); color: #fff; border-radius: 50%; width: 20px; height: 20px; display: grid; place-items: center; font-size: 11px; }
+.achosen li.over { box-shadow: -3px 0 0 var(--accent); }
+.achosen li.empty-li { background: none; border: 0; cursor: default; color: var(--muted); padding: 0; }
+.apool { display: flex; flex-wrap: wrap; gap: 6px; max-height: 150px; overflow: auto; }
+.achip { border: 1px solid var(--line); cursor: pointer; font-size: 12px; padding: 3px 9px; }
+.achip:hover { border-color: var(--accent); color: var(--text); }
+.achip span { color: var(--muted); margin-left: 3px; }

@@ -13,17 +13,8 @@ MUSIC = Path.home() / "Music"
 
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".mp4", ".flac", ".wav", ".aif", ".aiff", ".ogg", ".opus", ".alac"}
 
-DEFAULT_KNOWN_ARTISTS = {
-    "Bad Bunny": 10, "Daddy Yankee": 8, "Karol G": 8, "Feid": 7, "Ozuna": 7, "Plan B": 6, "Cosculluela": 5,
-    "Myke Towers": 7, "Rauw Alejandro": 7, "Don Omar": 7, "Yandel": 6, "El Alfa": 6, "J Balvin": 8,
-    "Shakira": 8, "Anuel AA": 6, "Maluma": 7, "Nicky Jam": 6, "Wisin": 5, "Sabrina Carpenter": 7,
-    "Christina Aguilera": 6, "Doechii": 5, "Jarabe de Palo": 5, "Davido": 5, "Juan Magán": 5,
-    "La Sonora Dinamita": 5, "El Barrio": 4, "FloyyMenor": 6, "Peso Pluma": 6, "Becky G": 5,
-}
-
 DEFAULTS = {
     "projects": [],
-    "known_artists": DEFAULT_KNOWN_ARTISTS,
     "remix_bonus": 1.0,
     "windows_root": "C:/DJ Music",
     "fetch_covers": True,

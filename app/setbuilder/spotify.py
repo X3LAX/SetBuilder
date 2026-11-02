@@ -16,7 +16,8 @@ from .library import core_title
 AUTH = "https://accounts.spotify.com/authorize"
 TOKEN = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
-SCOPES = "playlist-modify-private playlist-modify-public user-read-private"
+SCOPES = ("playlist-modify-private playlist-modify-public playlist-read-private playlist-read-collaborative "
+          "user-read-private")
 KEYCHAIN = "SetBuilder-Spotify"
 _pending = {}
 
@@ -151,6 +152,55 @@ def find_track(artist, title):
     return None
 
 
+def playlist_id(url_or_id):
+    m = re.search(r"playlist[/:]([A-Za-z0-9]{10,})", url_or_id or "")
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[A-Za-z0-9]{10,}", (url_or_id or "").strip()):
+        return url_or_id.strip()
+    raise SpotifyError("Lien de playlist Spotify invalide.")
+
+
+def playlist_info(pid):
+    r = _call("GET", f"/playlists/{pid}", params={"fields": "name,owner(id),external_urls"})
+    if r.status_code != 200:
+        raise SpotifyError(f"Playlist inaccessible ({r.status_code}). Si elle est privée, reconnecte Spotify "
+                           "(Réglages) pour autoriser la lecture des playlists.")
+    return r.json()
+
+
+def playlist_tracks(pid):
+    """[{uri, artist, title}] of a playlist, all pages."""
+    out, path = [], f"/playlists/{pid}/items"
+    params = {"limit": 100, "offset": 0}
+    while True:
+        r = _call("GET", path, params=params)
+        if r.status_code in (404, 410) and path.endswith("/items"):
+            path = f"/playlists/{pid}/tracks"
+            continue
+        if r.status_code != 200:
+            raise SpotifyError(f"Lecture de la playlist refusée ({r.status_code}). Reconnecte Spotify (Réglages).")
+        data = r.json()
+        for it in data.get("items", []):
+            tr = it.get("item") or it.get("track")
+            if tr and tr.get("type", "track") == "track" and tr.get("uri", "").startswith("spotify:track:"):
+                out.append({"uri": tr["uri"], "artist": ", ".join(a["name"] for a in tr["artists"]),
+                            "title": tr["name"]})
+        if not data.get("next"):
+            return out
+        params["offset"] += 100
+
+
+def add_tracks(pid, uris):
+    for i in range(0, len(uris), 100):
+        chunk = {"uris": uris[i:i + 100]}
+        a = _call("POST", f"/playlists/{pid}/items", json=chunk)
+        if a.status_code not in (200, 201):
+            a = _call("POST", f"/playlists/{pid}/tracks", json=chunk)
+        if a.status_code not in (200, 201):
+            raise SpotifyError(f"Ajout des morceaux refusé : {a.status_code} {a.text[:150]}")
+
+
 def create_playlist(name, description, uris, public=False):
     body = {"name": name, "description": description[:300], "public": public}
     r = _call("POST", "/me/playlists", json=body)
@@ -159,13 +209,7 @@ def create_playlist(name, description, uris, public=False):
     if r.status_code not in (200, 201):
         raise SpotifyError(f"Création de la playlist refusée : {r.status_code} {r.text[:150]}")
     pl = r.json()
-    for i in range(0, len(uris), 100):
-        chunk = {"uris": uris[i:i + 100]}
-        a = _call("POST", f"/playlists/{pl['id']}/items", json=chunk)
-        if a.status_code not in (200, 201):
-            a = _call("POST", f"/playlists/{pl['id']}/tracks", json=chunk)
-        if a.status_code not in (200, 201):
-            raise SpotifyError(f"Ajout des morceaux refusé : {a.status_code} {a.text[:150]}")
+    add_tracks(pl["id"], uris)
     return {"id": pl["id"], "url": pl.get("external_urls", {}).get("spotify", "")}
 
 

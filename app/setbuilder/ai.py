@@ -19,8 +19,15 @@ import anthropic
 
 from .config import SUPPORT, get_api_key, load_settings, which
 
-API_MODEL = "claude-haiku-5-5"        # cheapest current model; these are simple lookups
-CLAUDE_CODE_MODEL = "haiku"           # keeps subscription usage low
+# Model per quality level. Names / "known" ratings are simple lookups: the light model is enough.
+# Similar-track suggestions need real music knowledge (fewer invented tracks): balanced by default.
+LEVELS = {
+    "eco": {"api": "claude-haiku-5-5", "claude": "haiku", "effort": "low"},
+    "equilibre": {"api": "claude-sonnet-5-5", "claude": "sonnet", "effort": "low"},
+    "max": {"api": "claude-opus-5-5", "claude": "opus", "effort": "medium"},
+}
+TASK_DEFAULT = {"names": "eco", "similar": "equilibre"}
+API_MODEL = LEVELS["eco"]["api"]
 BATCH = {"api": 80, "claude": 80, "codex": 150}   # Codex has a large fixed cost per call
 CACHE_FILE = SUPPORT / "ai-cache.json"
 _cache_lock = threading.Lock()
@@ -57,10 +64,11 @@ song each track is built on (10 = global hit everyone sings, 5 = known to Latin 
 track). A remix of a hit scores like the hit. original = "Artist - Title" of the original song, or "" for an \
 original club track. Keep every id."""
 
-SIMILAR_PROMPT = """You are a DJ's crate digger. Given a DJ set (artist - title, BPM, Camelot key), suggest real, \
-existing tracks that would fit in the same set: same genres and energy, BPM within ±3, compatible keys when you know \
-them. Prefer club remixes / extended versions of well-known songs and current tech-house / Latin house tracks. \
-Never repeat a track from the set. Only suggest tracks you are confident exist on Spotify; exact artist and title."""
+SIMILAR_PROMPT = """You are a DJ's crate digger. Given a DJ set or playlist (artist - title, with BPM and Camelot key \
+when known), suggest real, existing tracks that would fit in it: same genre, sub-genre and energy, similar tempo \
+(±3 BPM), compatible keys when you know them. Work out the style from the tracks themselves (do not assume a \
+genre). Prefer club-friendly versions (extended mixes, club remixes) and a mix of well-known and fresh tracks. \
+Never repeat a track from the list. Only suggest tracks you are confident exist on Spotify; exact artist and title."""
 
 
 # ------------------------------------------------------------ cache
@@ -125,13 +133,18 @@ def codex_status():
     return {"installed": True, "logged_in": logged, "method": "ChatGPT" if "chatgpt" in out.lower() else out[:40]}
 
 
-def _ask_claude(system, items, schema):
+def _level(task):
+    lv = load_settings().get(f"ai_level_{task}", TASK_DEFAULT[task])
+    return LEVELS.get(lv, LEVELS[TASK_DEFAULT[task]])
+
+
+def _ask_claude(system, items, schema, level):
     exe = which("claude")
     if not exe:
         raise AIUnavailable("Claude Code n'est pas installé (Réglages).")
     r = _run_cli([exe, "-p", "--output-format", "json", "--json-schema", json.dumps(schema),
-                  "--system-prompt", system, "--tools", "", "--model", CLAUDE_CODE_MODEL,
-                  "--no-session-persistence", "--safe-mode", "--effort", "low"],
+                  "--system-prompt", system, "--tools", "", "--model", level["claude"],
+                  "--no-session-persistence", "--safe-mode", "--effort", level["effort"]],
                  stdin_text=json.dumps(items, ensure_ascii=False, separators=(",", ":")))
     try:
         out = json.loads(r.stdout)
@@ -149,7 +162,7 @@ def _ask_claude(system, items, schema):
     return data["tracks"]
 
 
-def _ask_codex(system, items, schema):
+def _ask_codex(system, items, schema, level):
     exe = which("codex")
     if not exe:
         raise AIUnavailable("Codex n'est pas installé (Réglages).")
@@ -159,7 +172,7 @@ def _ask_codex(system, items, schema):
         with open(sp, "w") as f:
             json.dump(schema, f)
         cmd = [exe, "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-s", "read-only",
-               "-c", 'model_reasoning_effort="low"', "--output-schema", sp, "-o", op, "--color", "never", "-C", d]
+               "-c", f'model_reasoning_effort="{level["effort"]}"', "--output-schema", sp, "-o", op, "--color", "never", "-C", d]
         if model:
             cmd += ["-m", model]
         prompt = system + "\n\nAnswer only with the JSON. Do not run any command.\n\n" + json.dumps(
@@ -175,19 +188,19 @@ def _ask_codex(system, items, schema):
     return json.loads(text[text.find("{"):text.rfind("}") + 1])["tracks"]
 
 
-def _ask_api(system, items, schema):
+def _ask_api(system, items, schema, level):
     key = get_api_key()
     if not key:
         raise AIUnavailable("Aucune clé API Claude (Réglages).")
     client = anthropic.Anthropic(api_key=key)
+    req = dict(model=level["api"], max_tokens=16000, system=system,
+               output_config={"effort": level["effort"], "format": {"type": "json_schema", "schema": schema}},
+               messages=[{"role": "user", "content": json.dumps(items, ensure_ascii=False, separators=(",", ":"))}])
     try:
-        resp = client.messages.create(
-            model=API_MODEL,
-            max_tokens=16000,
-            system=system,
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
-            messages=[{"role": "user", "content": json.dumps(items, ensure_ascii=False, separators=(",", ":"))}],
-        )
+        if level["api"] == "claude-haiku-5-5":   # Haiku has no server-side refusal fallback
+            resp = client.messages.create(**req)
+        else:
+            resp = client.beta.messages.create(**req, betas=["server-side-fallback-2026-07-01"], fallbacks="default")
     except anthropic.AuthenticationError as e:
         raise AIUnavailable("Clé API Claude refusée.") from e
     except anthropic.RateLimitError as e:
@@ -229,7 +242,7 @@ def status():
     return {"claude": c, "codex": x, "has_key": k, "provider": prov, "label": LABEL.get(prov, ""), "ok": ok}
 
 
-def _run(system, items, schema, progress):
+def _run(system, items, schema, progress, task="names"):
     prov = provider()
     if prov is None:
         raise AIUnavailable("IA non configurée : connecte Claude, Codex ou une clé API dans Réglages.")
@@ -237,7 +250,7 @@ def _run(system, items, schema, progress):
     size = BATCH[prov]
     for i in range(0, len(items), size):
         progress(i, len(items), f"IA ({LABEL[prov]})…")
-        out += ASK[prov](system, items[i:i + size], schema)
+        out += ASK[prov](system, items[i:i + size], schema, _level(task))
     progress(len(items), len(items), "IA terminée")
     return out
 
@@ -291,19 +304,20 @@ def rate_known(items, progress=lambda i, n, m: None):
 
 
 def suggest_similar(set_tracks, count=40, progress=lambda i, n, m: None):
-    """set_tracks: [{artist, title, bpm, camelot}] -> [{artist, title}] in one call."""
+    """set_tracks: [{artist, title, bpm?, camelot?}] -> [{artist, title}] in one call."""
     prov = provider()
     if prov is None:
         raise AIUnavailable("IA non configurée (Réglages).")
-    lines = [f"{t['artist']} - {t['title']} | {t['bpm']:g} BPM | {t['camelot']}" for t in set_tracks]
+    lines = [f"{t['artist']} - {t['title']}" + (f" | {t['bpm']:g} BPM | {t['camelot']}" if t.get("bpm") else "")
+             for t in set_tracks]
     progress(0, 1, f"IA ({LABEL[prov]}) : morceaux similaires…")
-    res = ASK[prov](SIMILAR_PROMPT + f"\nSuggest {count} tracks.", [{"set": lines}], SIMILAR_SCHEMA)
+    res = ASK[prov](SIMILAR_PROMPT + f"\nSuggest {count} tracks.", [{"set": lines}], SIMILAR_SCHEMA, _level("similar"))
     progress(1, 1, "IA terminée")
     return res
 
 
 def test_provider(name):
-    return ASK[name](KNOWN_PROMPT, [{"id": "t", "a": "Bad Bunny", "t": "Dákiti"}], KNOWN_SCHEMA)
+    return ASK[name](KNOWN_PROMPT, [{"id": "t", "a": "Bad Bunny", "t": "Dákiti"}], KNOWN_SCHEMA, LEVELS["eco"])
 
 
 def test_key():

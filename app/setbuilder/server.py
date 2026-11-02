@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, analysis, covers, export, library, planner, soundcloud, spotify
+from . import ai, analysis, covers, export, library, planner, soundcloud, spotify, usb
 from .config import get_api_key, load_settings, save_settings, set_api_key
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -40,20 +40,60 @@ def register(root):
         save_settings(s)
 
 
-def known_score(t, artists):
-    if t.get("known") is not None:
-        return t["known"]
-    hay = f"{t['artist']} {t['title']}".lower()
-    best = 0
-    for name, w in artists.items():
-        if re.search(r"(^|[^a-z])" + re.escape(name.lower()) + r"($|[^a-z])", hay):
-            best = max(best, int(w))
-    return best
+STRONG_SPLIT = re.compile(r"\s*(?:,|\+|/|\bx\b|\bvs\.?|\bfeat\.?|\bft\.?|\bfeaturing\b)\s*", re.I)
+
+
+def _segments(t):
+    segs = STRONG_SPLIT.split(t["artist"])
+    segs += re.findall(r"\((?:feat\.?|ft\.?)\s*([^)]+)\)", t["title"], re.I)
+    return [x.strip() for x in segs if x and x.strip()]
+
+
+def artist_groups(tracks):
+    """'A & B' pairs that come back in several tracks are duos (Tom & Collins), not two artists."""
+    counts, solo = {}, set()
+    for t in tracks:
+        for seg in _segments(t):
+            parts = [x.strip() for x in seg.split("&")]
+            if len(parts) == 1:
+                solo.add(parts[0].lower())
+            for a, b in zip(parts, parts[1:]):
+                k = (a.lower(), b.lower())
+                counts[k] = counts.get(k, 0) + 1
+    # a member who also releases alone (Bad Bunny) is an artist of their own, not half of a duo
+    return {f"{a} & {b}" for (a, b), n in counts.items() if n >= 2 and a not in solo and b not in solo}
+
+
+def split_artists(t, groups=frozenset()):
+    out = []
+    for seg in _segments(t):
+        parts = [x.strip() for x in seg.split("&") if x.strip()]
+        i = 0
+        while i < len(parts):
+            if i + 1 < len(parts) and f"{parts[i]} & {parts[i + 1]}".lower() in groups:
+                out.append(f"{parts[i]} & {parts[i + 1]}"); i += 2
+            else:
+                out.append(parts[i]); i += 1
+    return out
+
+
+def pref_weights(p):
+    """Preferred artists of this project, best first -> weight 10 down to 6."""
+    chosen = p.data.get("artists", [])
+    n = max(1, len(chosen) - 1)
+    return {a.lower(): round(10 - 4 * i / n, 1) for i, a in enumerate(chosen)}
+
+
+def pref_score(t, prefs, groups):
+    names = {a.lower() for a in split_artists(t, groups)}
+    return max((w for a, w in prefs.items() if a in names), default=0)
 
 
 def enriched(p):
     """Track dicts with analysis, energy, priority score and flags, as the planner and UI need them."""
     s = load_settings()
+    prefs = pref_weights(p)
+    groups = artist_groups(p.data["tracks"].values())
     ts = [dict(t) for t in p.data["tracks"].values()]
     an = {t["id"]: t["analysis"] for t in ts if t.get("analysis")}
     en = analysis.energy_scores(an)
@@ -66,9 +106,12 @@ def enriched(p):
         t["duration"] = a.get("duration") or t.get("duration") or 0
         t["play"] = planner.play_minutes(t["duration"])
         t["remix"] = library.is_remix(t["title"])
-        t["known"] = known_score(t, s["known_artists"])
-        t["known_source"] = "IA" if p.data["tracks"][t["id"]].get("known") is not None else "liste"
-        t["score"] = 0.6 * t["known"] + (s["remix_bonus"] * (1.0 if t["known"] >= 4 else 0.5) if t["remix"] else 0)
+        pref = pref_score(t, prefs, groups)
+        t["known"] = max(t.get("known") or 0, pref)
+        t["preferred"] = pref > 0
+        t["known_source"] = "IA" if p.data["tracks"][t["id"]].get("known") is not None else "artistes préférés"
+        t["score"] = (0.6 * t["known"] + 0.2 * pref   # chosen artists also beat equally "known" ones
+                      + (s["remix_bonus"] * (1.0 if t["known"] >= 4 else 0.5) if t["remix"] else 0))
         t["family"] = library.core_title(t["artist"].split(",")[0].split("&")[0]) + "|" + library.core_title(t["title"])
         t["short"] = t["duration"] < 110
         t["quiet"] = bool(a) and a.get("loud_db", -9) < -13
@@ -166,8 +209,8 @@ def ai_action(action: str, name: str):
 @app.post("/api/settings")
 def update_settings(body: dict):
     s = load_settings()
-    for k in ("known_artists", "remix_bonus", "windows_root", "fetch_covers", "use_ai", "ai_provider",
-              "codex_model", "spotify_client_id"):
+    for k in ("remix_bonus", "windows_root", "fetch_covers", "use_ai", "ai_provider",
+              "codex_model", "spotify_client_id", "ai_level_names", "ai_level_similar"):
         if k in body:
             s[k] = body[k]
     save_settings(s)
@@ -225,6 +268,30 @@ def forget_project(body: dict):
     s["projects"] = [r for r in s["projects"] if r != body["root"]]
     save_settings(s)
     return state()
+
+
+@app.get("/api/artists")
+def artists(root: str):
+    """Every artist of the project with its number of tracks, for the per-set preference picker."""
+    p = project(root)
+    counts = {}
+    groups = artist_groups(p.data["tracks"].values())
+    for t in p.data["tracks"].values():
+        for a in dict.fromkeys(split_artists(t, groups)):
+            key = a.lower()
+            name, n = counts.get(key, (a, 0))
+            counts[key] = (name, n + 1)
+    items = sorted(counts.values(), key=lambda x: (-x[1], x[0].lower()))
+    return {"all": [{"name": n, "count": c} for n, c in items], "chosen": p.data.get("artists", [])}
+
+
+@app.post("/api/artists")
+def save_artists(body: dict):
+    p = project(body["root"])
+    with LOCK:
+        p.data["artists"] = [a for a in dict.fromkeys(body.get("chosen", [])) if a.strip()]
+        p.save()
+    return project_view(p)
 
 
 @app.get("/api/project")
@@ -553,27 +620,48 @@ def spotify_logout():
     return spotify_status()
 
 
+@app.get("/api/spotify/playlist")
+def spotify_playlist(url: str):
+    pid = spotify.playlist_id(url)
+    try:
+        info = spotify.playlist_info(pid)
+        return {"id": pid, "name": info.get("name"), "tracks": spotify.playlist_tracks(pid)}
+    except spotify.SpotifyError as e:
+        raise HTTPException(400, str(e)) from e
+
+
 @app.post("/api/spotify/similar")
 def spotify_similar(body: dict):
-    p = project(body["root"])
+    """Find tracks similar to a set (or to a Spotify playlist) and add them to a new or the same playlist."""
+    p = project(body["root"]) if body.get("root") else None
 
     def run(progress):
-        ts = enriched(p)
-        by = {t["id"]: t for t in ts}
-        base = [by[i] for i in p.data["set"] if i in by] or sorted(ts, key=lambda t: -t["score"])[:40]
         count = int(body.get("count", 40))
         source = body.get("source", "auto")
-        library_titles = {library.core_title(t["title"]) for t in ts}
-        cands = []
-        if source in ("auto", "ia") and ai.status()["ok"]:
-            cands += ai.suggest_similar(base[:60], int(count * 1.5), progress)
-        elif source == "ia":
-            raise ai.AIUnavailable("Aucune IA connectée : choisis la source « Deezer » ou connecte une IA.")
-        if source == "deezer" or len(cands) < count:
-            progress(0, 1, "Deezer : artistes similaires…")
-            cands += spotify.deezer_similar(base, limit=count * 2)
-        seen, uris, added, missing = set(), [], [], []
-        if body.get("include_set"):
+        from_url = (body.get("playlist") or "").strip()
+        exclude = set()
+        if from_url:
+            pid = spotify.playlist_id(from_url)
+            info = spotify.playlist_info(pid)
+            progress(0, 1, f"Lecture de « {info.get('name')} »…")
+            base = spotify.playlist_tracks(pid)
+            if not base:
+                raise spotify.SpotifyError("La playlist est vide.")
+            seen = {t["uri"] for t in base}
+            exclude = {library.core_title(t["title"]) for t in base}
+            label = info.get("name") or "playlist"
+        else:
+            ts = enriched(p)
+            by = {t["id"]: t for t in ts}
+            base = [by[i] for i in p.data["set"] if i in by] or sorted(ts, key=lambda t: -t["score"])[:40]
+            seen = set()
+            label = p.data["name"]
+        if p:
+            exclude |= {library.core_title(t["title"]) for t in p.data["tracks"].values()}
+        exclude |= {library.core_title(t["title"]) for t in base}
+
+        uris, added, missing = [], [], []
+        if body.get("include_set") and not from_url:
             for n, t in enumerate(base):
                 progress(n, len(base), f"Spotify : {t['artist']} - {t['title']}")
                 hit = spotify.find_track(t["artist"], t["title"])
@@ -581,25 +669,80 @@ def spotify_similar(body: dict):
                     seen.add(hit["uri"]); uris.append(hit["uri"])
                 elif not hit:
                     missing.append(f"{t['artist']} - {t['title']}")
-        n_similar = 0
-        for n, c in enumerate(cands):
-            if n_similar >= count:
-                break
-            if library.core_title(c["title"]) in library_titles:
-                continue
-            progress(n, len(cands), f"Spotify : {c['artist']} - {c['title']}")
-            hit = spotify.find_track(c["artist"], c["title"])
-            if hit and hit["uri"] not in seen:
-                seen.add(hit["uri"]); uris.append(hit["uri"]); n_similar += 1
-                added.append(f"{hit['artists']} - {hit['name']}")
+
+        def take(cands):
+            for n, c in enumerate(cands):
+                if len(added) >= count:
+                    return
+                ct = library.core_title(c["title"])
+                if ct in exclude:
+                    continue
+                progress(n, len(cands), f"Spotify : {c['artist']} - {c['title']}")
+                hit = spotify.find_track(c["artist"], c["title"])
+                if hit and hit["uri"] not in seen:
+                    seen.add(hit["uri"]); uris.append(hit["uri"]); exclude.add(ct)
+                    added.append(f"{hit['artists']} - {hit['name']}")
+
+        if source in ("auto", "ia"):
+            if ai.status()["ok"]:
+                take(ai.suggest_similar(base[:60], int(count * 1.6), progress))
+            elif source == "ia":
+                raise ai.AIUnavailable("Aucune IA connectée : choisis la source « Deezer » ou connecte une IA.")
+        if source == "deezer" or len(added) < count:   # top up with Deezer's related artists
+            progress(0, 1, "Deezer : artistes similaires…")
+            take(spotify.deezer_similar(base, limit=count * 3))
         if not uris:
-            raise ai.AIUnavailable("Aucun morceau trouvé sur Spotify.")
-        name = body.get("name") or f"{p.data['name']} · similaires"
-        pl = spotify.create_playlist(name, f"Créée par SetBuilder à partir du set « {p.data['name']} ».", uris,
-                                     public=bool(body.get("public")))
-        return {"url": pl["url"], "similar": added, "total": len(uris), "missing": missing}
+            raise ai.AIUnavailable("Aucun nouveau morceau trouvé sur Spotify.")
+        if from_url and body.get("target", "same") == "same":
+            spotify.add_tracks(pid, uris)
+            url = info.get("external_urls", {}).get("spotify") or f"https://open.spotify.com/playlist/{pid}"
+        else:
+            name = body.get("name") or f"{label} · similaires"
+            url = spotify.create_playlist(name, f"Créée par SetBuilder à partir de « {label} ».", uris,
+                                          public=bool(body.get("public")))["url"]
+        return {"url": url, "similar": added, "total": len(uris), "missing": missing}
 
     return start_job(run)
+
+
+# ------------------------------------------------------------ USB (CDJ / XDJ folder mode)
+
+@app.get("/api/usb/volumes")
+def usb_volumes():
+    return {"volumes": usb.list_volumes()}
+
+
+@app.post("/api/usb/export")
+def usb_export(body: dict):
+    p = project(body["root"])
+
+    def run(progress):
+        ts = enriched(p)
+        by = {t["id"]: dict(t, path=str(p.path_of(t["id"]))) for t in ts}
+        set_ids = [i for i in p.data["set"] if i in by]
+        if not set_ids:
+            raise ai.AIUnavailable("Génère d'abord un set.")
+        playlists = [(f"Set {round(sum(by[i]['play'] for i in set_ids) / 60)} min", set_ids)]
+        if body.get("extended", True):
+            rest = [i for b in p.data.get("blocks", [])[1:] if not b["name"].startswith("À éviter")
+                    for i in b["ids"] if i in by]
+            if rest:
+                playlists.append(("Suite (set etendu)", rest))
+        try:
+            return usb.export(body["volume"], p.data["name"], by, playlists, bool(body.get("convert_flac")), progress)
+        except ValueError as e:
+            raise ai.AIUnavailable(str(e)) from e
+
+    return start_job(run)
+
+
+@app.post("/api/usb/eject")
+def usb_eject(body: dict):
+    try:
+        usb.eject(body["volume"])
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True}
 
 
 # ------------------------------------------------------------ export
