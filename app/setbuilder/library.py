@@ -14,6 +14,8 @@ from mutagen.mp4 import MP4, MP4Cover
 
 from .config import AUDIO_EXT, MUSIC
 
+DOWNLOADS = "_Telechargements"   # inside a project: raw downloads waiting to be imported
+
 # ---------------------------------------------------------------- names
 
 JUNK = [
@@ -27,7 +29,7 @@ MIX_WORDS = r"remix|edit|mix|vip|mashup|bootleg|rework|flip|version|extended|dub
 
 def clean_text(s):
     s = unicodedata.normalize("NFC", s or "")
-    s = s.replace("_", " ")
+    s = s.replace("_", " ").replace("，", ", ").replace("／", "/").replace("｜", "|")
     for pat in JUNK:
         s = re.sub(pat, " ", s, flags=re.I)
     s = re.sub(r"\s*\|\s*.*$", "", s)                 # "Title | Label promo"
@@ -69,8 +71,8 @@ def propose_name(path, tags):
     stem = Path(path).stem
     fa, ft = split_name(stem)
     ta, tt = clean_text(tags.get("artist", "")), clean_text(tags.get("title", ""))
-    # title tags from SoundCloud/YouTube rips often hold "Artist - Title"
-    if tt and " - " in tt and not ta:
+    # SoundCloud/YouTube titles often hold "Artist - Title" while the artist tag is just the uploader
+    if tt and " - " in tt:
         ta, tt = split_name(tt)
     artist = ta if not looks_junky(ta) else fa
     title = tt if not looks_junky(tt) else ft
@@ -295,7 +297,7 @@ class Project:
         for tid, t in list(self.data["tracks"].items()):
             if not (self.root / t["file"]).exists():
                 del self.data["tracks"][tid]
-        for p in scan([self.tracks_dir]):
+        for p in scan([self.tracks_dir]):  # downloads waiting in _Telechargements are not tracks yet
             rel = str(p.relative_to(self.root.resolve()))
             if rel not in known:
                 self.add_track(p)
@@ -343,7 +345,10 @@ def import_files(project, rows, progress=lambda i, n, msg: None):
         n = 2
         while dst.exists():
             dst = project.tracks_dir / f"{base} ({n}){src.suffix.lower()}"; n += 1
-        shutil.copy2(src, dst)
+        if project.root.resolve() / DOWNLOADS in src.resolve().parents:
+            shutil.move(src, dst)   # our own downloads: no need to keep a second copy
+        else:
+            shutil.copy2(src, dst)
         try:
             write_tags(dst, artist=artist, title=title)
         except Exception:

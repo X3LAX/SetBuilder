@@ -9,9 +9,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
+PREFERRED_PORT = 47615   # fixed so the Spotify redirect URI stays the same
+
+
 def free_port():
     s = socket.socket()
-    s.bind(("127.0.0.1", 0))
+    try:
+        s.bind(("127.0.0.1", PREFERRED_PORT))
+    except OSError:
+        s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()
     return port
@@ -49,7 +55,8 @@ class Api:
 
 def serve(port):
     import uvicorn
-    from setbuilder.server import app
+    from setbuilder.server import PORT, app
+    PORT["value"] = port
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 

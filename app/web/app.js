@@ -140,6 +140,9 @@ function renderImport() {
     <div class="panel"><h2>Ajouter des morceaux</h2>
       <p class="hint">Choisis des dossiers même mal rangés (sous-dossiers, noms bizarres, sans pochette) : l'app trouve tous les fichiers audio, propose des noms propres « Artiste - Titre (Remix) », repère les doublons, puis copie tout dans <code>${esc(S.proj.root)}/Tracks</code> et ajoute les pochettes manquantes.</p>
       <div class="row"><button class="btn primary" id="iFolders">Choisir des dossiers…</button><button class="btn" id="iFiles">Choisir des fichiers…</button></div></div>
+    <div class="panel"><h2>Depuis SoundCloud</h2>
+      <p class="hint">Colle le lien d'un morceau, d'une playlist (set), d'un profil ou de ses likes (<code>…/likes</code>). Le fichier original est pris quand l'artiste autorise le téléchargement, sinon la meilleure qualité en écoute (souvent 128–160 kbps). Pochette et infos sont ajoutées. Respecte les droits des artistes : privilégie les « free download ».</p>
+      <div class="row"><input type="text" id="iSc" placeholder="https://soundcloud.com/…" style="width:460px"><button class="btn primary" id="iScGo">Télécharger</button></div></div>
     ${rows ? `<div class="panel">
       <div class="row" style="margin-bottom:12px"><h2 style="margin:0">${rows.length} fichiers trouvés</h2>
         <span class="chip warn">${rows.filter(r => !r.confident).length} à vérifier</span>
@@ -163,6 +166,14 @@ function renderImport() {
     renderImport();
   };
   $("#iFolders").onclick = async () => scan(await pickFolders(true));
+  $("#iScGo").onclick = async () => {
+    const url = $("#iSc").value.trim(); if (!url) return toast("Colle un lien SoundCloud.");
+    const r = await job("/api/soundcloud", { root: S.proj.root, url }, "Téléchargement SoundCloud");
+    const known = new Set((S.rows || []).map(x => x.src));
+    S.rows = (S.rows || []).concat(r.rows.filter(x => !known.has(x.src)));
+    toast(r.count ? `${r.count} morceaux téléchargés : vérifie les noms puis importe.` + (r.errors.length ? ` ${r.errors.length} erreurs.` : "") : (r.errors[0] || "Rien de nouveau à télécharger."), !r.count && r.errors.length);
+    renderImport();
+  };
   $("#iFiles").onclick = async () => scan(await pickFiles());
   if (!rows) return;
   $$("tbody tr").forEach(tr => {
@@ -316,6 +327,14 @@ function renderSet() {
         <div class="stat"><b style="color:${clashes ? "var(--bad)" : "var(--ok)"}">${clashes}</b><span>clash</span></div></div></div>
     </div>
     ${P.set.length ? `<div class="panel"><table><thead><tr><th>#</th><th>Début</th><th></th><th>Morceau</th><th>BPM</th><th>Clé</th><th>Énergie</th><th>Connu</th><th></th><th></th></tr></thead><tbody id="setBody">${rows}</tbody></table></div>
+    <div class="panel"><h2>Spotify : playlist de morceaux similaires</h2>
+      <p class="hint">Trouve des morceaux qui iraient dans ce set (même style, tempo proche) et crée une playlist sur ton Spotify pour les découvrir. Source : l'IA (un seul appel) et/ou Deezer (artistes similaires, sans IA). Les morceaux déjà dans ta bibliothèque sont ignorés.</p>
+      <div class="row"><label class="field">Nombre<select id="spN"><option>20</option><option selected>40</option><option>60</option><option>100</option></select></label>
+        <label class="field">Source<select id="spSrc"><option value="auto">IA + Deezer</option><option value="ia">IA seulement</option><option value="deezer">Deezer seulement (sans IA)</option></select></label>
+        <label class="check" style="margin-top:18px"><input type="checkbox" id="spSet"> Inclure les morceaux du set</label>
+        <label class="check" style="margin-top:18px"><input type="checkbox" id="spPub"> Playlist publique</label>
+        <button class="btn primary" id="spGo" style="margin-top:18px">Créer la playlist</button></div>
+      <div id="spRes"></div></div>
     ${P.blocks.length > 1 ? `<div class="panel"><div class="row"><h2 style="margin:0">Set étendu (au cas où)</h2><span class="spacer"></span><button class="btn small" id="ext">Recalculer la suite</button></div>
       <p class="hint" style="margin-top:8px">Même début que le set, puis les titres connus restants, puis le reste en vagues qui remontent à chaque fois.</p>
       ${P.blocks.slice(1).map(b => `<div class="block"><h3>${esc(b.name)} <span>${b.ids.length} morceaux · ${fmtH(b.ids.reduce((s, i) => s + (tm[i]?.play || 0), 0) / 60)}</span></h3>
@@ -329,6 +348,14 @@ function renderSet() {
     toast(`Set de ${S.proj.set.length} morceaux (${fmtH(S.proj.set_minutes)}).`); renderSet();
   };
   if ($("#unlock")) $("#unlock").onclick = e => { e.preventDefault(); S.lock = -1; renderSet(); };
+  if ($("#spGo")) $("#spGo").onclick = async () => {
+    const st = await api("/api/spotify/status");
+    if (!st.connected) { toast("Connecte d'abord Spotify (Réglages › Spotify).", true); return; }
+    const r = await job("/api/spotify/similar", { root: P.root, count: +$("#spN").value, source: $("#spSrc").value, include_set: $("#spSet").checked, public: $("#spPub").checked }, "Playlist Spotify");
+    $("#spRes").innerHTML = `<div class="row" style="margin-top:12px"><span class="chip ok">${r.total} morceaux</span><button class="btn small" id="spOpen">Ouvrir dans Spotify</button></div>
+      <div class="muted" style="margin-top:8px;font-size:12px">${r.similar.slice(0, 60).map(esc).join(" · ")}</div>`;
+    $("#spOpen").onclick = () => api("/api/open", { path: r.url });
+  };
   if ($("#ext")) $("#ext").onclick = async () => { S.proj = await job("/api/set/extend", { root: P.root }, "Calcul de la suite"); renderSet(); };
   drawChart(pr);
   const save = async set => { S.proj = await api("/api/set/save", { root: P.root, set }); renderSet(); };
@@ -435,40 +462,62 @@ function renderExport() {
 async function renderSettings() {
   $("#title").textContent = "Réglages";
   S.state = await api("/api/state");
-  const s = S.state.settings, ai = S.state.ai, sub = ai.subscription;
+  const s = S.state.settings, ai = S.state.ai;
+  const sp = await api("/api/spotify/status");
+  const tool = (name, label, st, extra) => `
+    <div class="panel"><h2>${label}</h2>${extra}
+      <div class="row">${!st.installed ? `<span class="chip bad">non installé</span><button class="btn primary" data-act="install" data-n="${name}">Installer</button>`
+        : st.logged_in ? `<span class="chip ok">connecté${st.method ? " · " + esc(st.method) : ""}</span><button class="btn" data-act="test" data-n="${name}">Tester</button><button class="btn" data-act="login" data-n="${name}">Changer de compte</button>`
+        : `<span class="chip warn">non connecté</span><button class="btn primary" data-act="login" data-n="${name}">Connecter</button>`}
+        <button class="btn sRef">Actualiser</button></div></div>`;
   $("#view").innerHTML = `
-    <div class="panel"><h2>IA (Claude) — optionnelle</h2>
-      <p class="hint">Sert à corriger les noms illisibles et à noter à quel point chaque titre est connu. Sans IA, l'app marche avec des règles automatiques et ta liste d'artistes.</p>
-      <label class="field" style="max-width:420px">Utiliser<select id="sProv">
-        <option value="auto">Automatique (abonnement si connecté, sinon clé API)</option>
-        <option value="subscription">Mon abonnement Claude (Pro / Max)</option><option value="api">Une clé API</option></select></label>
-      <div class="muted" style="margin-top:8px">État : ${ai.ok ? `<span class="chip ok">prête</span> via ${ai.provider === "subscription" ? "ton abonnement" : "la clé API"}` : `<span class="chip warn">non configurée</span>`}</div></div>
-    <div class="panel"><h2>Abonnement Claude (comme Codex avec ChatGPT)</h2>
-      <p class="hint">L'app passe par <b>Claude Code</b> connecté à ton compte Claude : l'utilisation est comptée dans ton forfait Pro/Max, sans facturation API à part. La connexion se fait une fois, dans le Terminal qui s'ouvre (navigateur → « Autoriser »).</p>
-      <div class="row">${!sub.installed ? `<span class="chip bad">Claude Code non installé</span><button class="btn primary" id="sInst">Installer Claude Code</button>`
-        : sub.logged_in ? `<span class="chip ok">Connecté (${esc(sub.method)})</span><button class="btn" id="sSubT">Tester</button><button class="btn" id="sLog">Changer de compte</button>`
-        : `<span class="chip warn">Non connecté</span><button class="btn primary" id="sLog">Connecter mon abonnement</button>`}
-        <button class="btn" id="sRef">Actualiser</button></div></div>
-    <div class="panel"><h2>Clé API (alternative)</h2>
-      <p class="hint">Facturée à l'usage sur ton compte console.anthropic.com (quelques centimes pour une centaine de morceaux). Gardée dans le trousseau macOS.</p>
+    <div class="panel"><h2>IA — optionnelle et économe</h2>
+      <p class="hint">L'IA ne sert qu'à 3 choses, toujours via un bouton ✦ : corriger les noms que les règles n'arrivent pas à lire, noter si un titre est connu, et proposer des morceaux similaires pour Spotify. L'analyse BPM / tonalité, les pochettes et la création du set n'utilisent pas l'IA. Seules les lignes douteuses sont envoyées, avec le modèle le plus léger, et chaque réponse est mémorisée pour ne jamais être redemandée.</p>
+      <label class="field" style="max-width:460px">Utiliser<select id="sProv">
+        <option value="auto">Automatique (Claude, sinon Codex, sinon clé API)</option>
+        <option value="claude">Mon abonnement Claude</option><option value="codex">Mon abonnement ChatGPT (Codex)</option><option value="api">Une clé API Claude</option></select></label>
+      <div class="muted" style="margin-top:8px">État : ${ai.ok ? `<span class="chip ok">prête</span> via ${esc(ai.label)}` : `<span class="chip warn">non configurée</span>`}</div></div>
+    ${tool("claude", "Abonnement Claude (Pro / Max)", ai.claude, `<p class="hint">Passe par Claude Code connecté à ton compte : compté dans ton forfait, rien à payer en plus.</p>`)}
+    ${tool("codex", "Abonnement ChatGPT (Codex)", ai.codex, `<p class="hint">Passe par Codex connecté à ton compte ChatGPT : compté dans ton forfait. Un peu plus lent (≈15 s par lot).</p>
+      <label class="field" style="max-width:300px;margin-bottom:10px">Modèle Codex (vide = celui par défaut)<input type="text" id="sCxM" value="${esc(s.codex_model || "")}" placeholder="ex. un modèle « mini »"></label>`)}
+    <div class="panel"><h2>Clé API Claude (alternative)</h2>
+      <p class="hint">Facturée à l'usage (modèle Haiku, le moins cher : moins d'un centime pour une centaine de morceaux). Gardée dans le trousseau macOS.</p>
       <div class="row"><input type="password" id="sKey" placeholder="${S.state.has_key ? "•••••••• clé enregistrée" : "sk-ant-…"}" style="width:340px">
-      <button class="btn primary" id="sKS">Enregistrer</button><button class="btn" id="sKT" ${S.state.has_key ? "" : "disabled"}>Tester</button>
+      <button class="btn primary" id="sKS">Enregistrer</button><button class="btn" data-act="test" data-n="api" ${S.state.has_key ? "" : "disabled"}>Tester</button>
       <button class="btn" id="sKD" ${S.state.has_key ? "" : "disabled"}>Supprimer</button></div></div>
+    <div class="panel"><h2>Spotify</h2>
+      <p class="hint">Pour créer des playlists de morceaux similaires. Spotify demande une petite « app développeur » gratuite (une fois, 2 min) :</p>
+      <ol class="steps"><li>Va sur <code>developer.spotify.com/dashboard</code>, connecte-toi, « Create app ».</li>
+        <li>Nom : SetBuilder. <b>Redirect URI</b> : <code id="sRU">${esc(sp.redirect_uri)}</code> <button class="btn small" id="sCopy">Copier</button>. Coche « Web API », enregistre.</li>
+        <li>Copie le <b>Client ID</b> de l'app et colle-le ici, puis « Connecter Spotify ».</li></ol>
+      <div class="row"><input type="text" id="sSpId" value="${esc(s.spotify_client_id || "")}" placeholder="Client ID" style="width:340px">
+        <button class="btn" id="sSpSave">Enregistrer</button>
+        ${sp.connected ? `<span class="chip ok">connecté : ${esc(sp.name)}</span><button class="btn" id="sSpOut">Déconnecter</button>` : `<button class="btn primary" id="sSpIn" ${s.spotify_client_id ? "" : "disabled"}>Connecter Spotify</button>`}
+        <button class="btn sRef">Actualiser</button></div>
+      ${sp.error ? `<div class="muted" style="margin-top:8px;color:var(--warn)">${esc(sp.error)}</div>` : ""}</div>
     <div class="panel"><h2>Artistes connus (priorité dans le set)</h2>
       <p class="hint">Un artiste par ligne, avec une note de 0 à 10. Utilisé quand l'IA n'a pas noté le morceau. Bad Bunny = 10 → ses remix passent en premier.</p>
       <textarea id="sArt" rows="12" style="width:420px">${Object.entries(s.known_artists).map(([a, w]) => `${a} = ${w}`).join("\n")}</textarea>
       <div class="params" style="max-width:420px;margin-top:12px"><label class="field">Bonus remix : <b id="rbV">${s.remix_bonus}</b><input type="range" id="sRB" min="0" max="3" step="0.25" value="${s.remix_bonus}"></label></div>
       <button class="btn primary" id="sSave" style="margin-top:8px">Enregistrer</button></div>`;
-  $("#sRB").oninput = e => $("#rbV").textContent = e.target.value;
-  $("#sProv").value = s.ai_provider || "auto";
+  const prov = s.ai_provider === "subscription" ? "claude" : (s.ai_provider || "auto");
+  $("#sProv").value = prov;
   $("#sProv").onchange = async e => { await api("/api/settings", { ai_provider: e.target.value }); renderSettings(); };
-  if ($("#sInst")) $("#sInst").onclick = async () => { await api("/api/subscription/install", {}); toast("Installation lancée dans le Terminal. Clique ensuite sur « Actualiser »."); };
-  if ($("#sLog")) $("#sLog").onclick = async () => { await api("/api/subscription/login", {}); toast("Connecte-toi dans la fenêtre qui s'ouvre, puis clique sur « Actualiser »."); };
-  if ($("#sSubT")) $("#sSubT").onclick = async () => { toast("Test en cours…"); const r = await api("/api/subscription/test", {}); toast(r.ok ? "L'abonnement fonctionne." : r.error, !r.ok); };
-  $("#sRef").onclick = () => renderSettings();
+  $$(".sRef").forEach(b => b.onclick = () => renderSettings());
+  $$("[data-act]").forEach(b => b.onclick = async () => {
+    const { act, n } = b.dataset;
+    if (act === "test") { toast("Test en cours…"); const r = await api(`/api/ai/test/${n}`, {}); return toast(r.ok ? "Ça fonctionne." : r.error, !r.ok); }
+    await api(`/api/ai/${act}/${n}`, {});
+    toast(act === "install" ? "Installation lancée dans le Terminal. Clique ensuite sur « Actualiser »." : "Connecte-toi dans la fenêtre qui s'ouvre, puis clique sur « Actualiser ».");
+  });
+  $("#sCxM").onchange = e => api("/api/settings", { codex_model: e.target.value.trim() });
   $("#sKS").onclick = async () => { const key = $("#sKey").value.trim(); if (!key) return; await api("/api/key", { key }); toast("Clé enregistrée."); renderSettings(); };
-  $("#sKT").onclick = async () => { const r = await api("/api/key/test", {}); toast(r.ok ? "La clé fonctionne." : `Clé refusée : ${r.error}`, !r.ok); };
   $("#sKD").onclick = async () => { await api("/api/key", { key: "" }); toast("Clé supprimée."); renderSettings(); };
+  $("#sCopy").onclick = () => { navigator.clipboard?.writeText($("#sRU").textContent); toast("Redirect URI copiée."); };
+  $("#sSpSave").onclick = async () => { await api("/api/settings", { spotify_client_id: $("#sSpId").value.trim() }); toast("Client ID enregistré."); renderSettings(); };
+  if ($("#sSpIn")) $("#sSpIn").onclick = async () => { await api("/api/spotify/login", {}); toast("Autorise SetBuilder dans ton navigateur, puis clique sur « Actualiser »."); };
+  if ($("#sSpOut")) $("#sSpOut").onclick = async () => { await api("/api/spotify/logout", {}); renderSettings(); };
+  $("#sRB").oninput = e => $("#rbV").textContent = e.target.value;
   $("#sSave").onclick = async () => {
     const known = {};
     $("#sArt").value.split("\n").forEach(l => { const m = l.match(/^\s*(.+?)\s*[=:]\s*(\d+)\s*$/); if (m) known[m[1]] = Math.min(10, +m[2]); });

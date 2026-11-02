@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, analysis, covers, export, library, planner
+from . import ai, analysis, covers, export, library, planner, soundcloud, spotify
 from .config import get_api_key, load_settings, save_settings, set_api_key
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -18,6 +18,7 @@ app = FastAPI()
 LOCK = threading.RLock()
 PROJECTS = {}
 JOBS = {}
+PORT = {"value": 47615}   # set by main.py; Spotify's redirect URI must match it
 
 
 # ------------------------------------------------------------ helpers
@@ -108,7 +109,7 @@ def start_job(fn, *args):
         try:
             job["result"] = fn(progress, *args)
             job["state"] = "done"
-        except ai.AIUnavailable as e:
+        except (ai.AIUnavailable, spotify.SpotifyError) as e:
             job.update(state="error", error=str(e))
         except Exception as e:  # noqa: BLE001 - surface any failure in the UI
             traceback.print_exc()
@@ -127,54 +128,46 @@ def job_status(jid: str):
 
 # ------------------------------------------------------------ settings & projects
 
-def ai_state():
-    sub = ai.subscription_status()
-    has_key = bool(get_api_key())
-    prov = ai.provider()
-    ok = (prov == "subscription" and sub["logged_in"]) or (prov == "api" and has_key)
-    return {"subscription": sub, "has_key": has_key, "provider": prov, "ok": ok}
-
-
 @app.get("/api/state")
 def state():
     s = load_settings()
-    a = ai_state()
+    a = ai.status()
     return {"settings": s, "has_key": a["has_key"], "ai": a, "projects": library.list_projects(s),
             "default_root": str(library.MUSIC)}
 
 
 def _terminal(command):
-    """Run a command in a visible Terminal window (login prompts need the user)."""
+    """Run a command in a visible Terminal window (sign-ins need the user)."""
     script = f'tell application "Terminal" to do script "{command}"\ntell application "Terminal" to activate'
     subprocess.run(["osascript", "-e", script])
 
 
-@app.post("/api/subscription/login")
-def subscription_login():
-    claude = ai._claude_bin() or "claude"
-    _terminal(f"{claude} auth login --claudeai")
+AI_TOOLS = {
+    "claude": {"install": "brew install --cask claude-code", "login": "{exe} auth login --claudeai"},
+    "codex": {"install": "brew install --cask codex", "login": "{exe} login"},
+}
+
+
+@app.post("/api/ai/{action}/{name}")
+def ai_action(action: str, name: str):
+    if action == "test":
+        try:
+            ai.test_provider(name)
+            return {"ok": True}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)[:300]}
+    if name not in AI_TOOLS or action not in ("install", "login"):
+        raise HTTPException(404)
+    from .config import which
+    _terminal(AI_TOOLS[name][action].format(exe=which(name) or name))
     return {"ok": True}
-
-
-@app.post("/api/subscription/install")
-def subscription_install():
-    _terminal("brew install --cask claude-code")
-    return {"ok": True}
-
-
-@app.post("/api/subscription/test")
-def subscription_test():
-    try:
-        ai.test_subscription()
-        return {"ok": True}
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": str(e)[:300]}
 
 
 @app.post("/api/settings")
 def update_settings(body: dict):
     s = load_settings()
-    for k in ("known_artists", "remix_bonus", "windows_root", "fetch_covers", "use_ai", "ai_provider"):
+    for k in ("known_artists", "remix_bonus", "windows_root", "fetch_covers", "use_ai", "ai_provider",
+              "codex_model", "spotify_client_id"):
         if k in body:
             s[k] = body[k]
     save_settings(s)
@@ -251,9 +244,12 @@ def import_ai(body: dict):
     rows = body["rows"]
 
     def run(progress):
+        # only the names the rules could not read: keeps AI usage (and cost) minimal
         items = [{"id": str(i), "file": Path(r["src"]).name, "folder": r["folder"], "tag_artist": r["tag_artist"],
                   "tag_title": r["tag_title"], "guess_artist": r["artist"], "guess_title": r["title"]}
-                 for i, r in enumerate(rows)]
+                 for i, r in enumerate(rows) if body.get("all") or not r.get("confident")]
+        if not items:
+            return rows
         res = ai.clean_names(items, progress)
         for i, r in enumerate(rows):
             if str(i) in res:
@@ -322,15 +318,17 @@ def fix_names(body: dict):
 
     def run(progress):
         ids = body.get("ids") or list(p.data["tracks"])
-        proposals = {}
+        proposals, unsure = {}, set()
         for tid in ids:
             path = p.path_of(tid)
-            a, ti, _ = library.propose_name(path, library.read_tags(path))
+            a, ti, ok = library.propose_name(path, library.read_tags(path))
             proposals[tid] = (a, ti)
-        if body.get("ai"):
+            if not ok:
+                unsure.add(tid)
+        if body.get("ai") and unsure:
             items = [{"id": tid, "file": p.path_of(tid).name, "folder": "", "tag_artist": p.data["tracks"][tid]["artist"],
                       "tag_title": p.data["tracks"][tid]["title"], "guess_artist": a, "guess_title": ti}
-                     for tid, (a, ti) in proposals.items()]
+                     for tid, (a, ti) in proposals.items() if tid in unsure]
             for tid, r in ai.clean_names(items, progress).items():
                 if tid in proposals:
                     proposals[tid] = (r["artist"], r["title"])
@@ -415,12 +413,15 @@ def known_ai(body: dict):
     p = project(body["root"])
 
     def run(progress):
-        items = [{"id": t["id"], "artist": t["artist"], "title": t["title"]} for t in p.data["tracks"].values()]
+        items = [{"id": t["id"], "artist": t["artist"], "title": t["title"]} for t in p.data["tracks"].values()
+                 if body.get("force") or t.get("known") is None]
+        if not items:
+            return {"rated": 0}
         res = ai.rate_known(items, progress)
         with LOCK:
             for tid, r in res.items():
                 if tid in p.data["tracks"]:
-                    p.data["tracks"][tid].update(known=int(r["known"]), original=r["original"])
+                    p.data["tracks"][tid].update(known=int(r["known"]), original=r.get("original", ""))
             p.save()
         return {"rated": len(res)}
 
@@ -488,6 +489,117 @@ def suggest(root: str, pos: int):
     p = project(root)
     ts = [t for t in enriched(p) if t["analysed"]]
     return {"ids": planner.suggestions(ts, p.data["set"], pos)}
+
+
+# ------------------------------------------------------------ SoundCloud
+
+@app.post("/api/soundcloud")
+def soundcloud_download(body: dict):
+    p = project(body["root"])
+    url = body.get("url", "").strip()
+    if not soundcloud.is_soundcloud(url):
+        raise HTTPException(400, "Colle un lien SoundCloud (morceau, playlist/set, profil ou likes).")
+
+    def run(progress):
+        dest = p.root / library.DOWNLOADS / "SoundCloud"
+        files, errors = soundcloud.download(url, dest, progress)
+        progress(0, 1, "Lecture des fichiers…")
+        rows = library.preview_import(files) if files else []
+        return {"rows": rows, "errors": errors[:20], "count": len(files)}
+
+    return start_job(run)
+
+
+# ------------------------------------------------------------ Spotify
+
+SPOTIFY_REDIRECT = "http://127.0.0.1:{port}/api/spotify/callback"
+
+
+@app.get("/api/spotify/status")
+def spotify_status():
+    st = spotify.status()
+    st["client_id"] = bool(load_settings().get("spotify_client_id"))
+    st["redirect_uri"] = SPOTIFY_REDIRECT.format(port=PORT["value"])
+    return st
+
+
+@app.post("/api/spotify/login")
+def spotify_login():
+    cid = load_settings().get("spotify_client_id", "").strip()
+    if not cid:
+        raise HTTPException(400, "Colle d'abord le Client ID de ton app Spotify (Réglages).")
+    url = spotify.login_url(cid, SPOTIFY_REDIRECT.format(port=PORT["value"]))
+    subprocess.run(["open", url])
+    return {"url": url}
+
+
+@app.get("/api/spotify/callback")
+def spotify_callback(code: str = "", state: str = "", error: str = ""):
+    from fastapi.responses import HTMLResponse
+    try:
+        if error:
+            raise spotify.SpotifyError(error)
+        spotify.finish_login(code, state)
+        msg = "Spotify est connecté à SetBuilder. Tu peux fermer cet onglet."
+    except spotify.SpotifyError as e:
+        msg = f"Échec de la connexion Spotify : {e}"
+    return HTMLResponse(f"<meta charset=utf-8><body style='font:16px -apple-system;padding:40px;background:#0e0f13;"
+                        f"color:#e9ebf1'><h2>SetBuilder</h2><p>{msg}</p>")
+
+
+@app.post("/api/spotify/logout")
+def spotify_logout():
+    spotify.logout()
+    return spotify_status()
+
+
+@app.post("/api/spotify/similar")
+def spotify_similar(body: dict):
+    p = project(body["root"])
+
+    def run(progress):
+        ts = enriched(p)
+        by = {t["id"]: t for t in ts}
+        base = [by[i] for i in p.data["set"] if i in by] or sorted(ts, key=lambda t: -t["score"])[:40]
+        count = int(body.get("count", 40))
+        source = body.get("source", "auto")
+        library_titles = {library.core_title(t["title"]) for t in ts}
+        cands = []
+        if source in ("auto", "ia") and ai.status()["ok"]:
+            cands += ai.suggest_similar(base[:60], int(count * 1.5), progress)
+        elif source == "ia":
+            raise ai.AIUnavailable("Aucune IA connectée : choisis la source « Deezer » ou connecte une IA.")
+        if source == "deezer" or len(cands) < count:
+            progress(0, 1, "Deezer : artistes similaires…")
+            cands += spotify.deezer_similar(base, limit=count * 2)
+        seen, uris, added, missing = set(), [], [], []
+        if body.get("include_set"):
+            for n, t in enumerate(base):
+                progress(n, len(base), f"Spotify : {t['artist']} - {t['title']}")
+                hit = spotify.find_track(t["artist"], t["title"])
+                if hit and hit["uri"] not in seen:
+                    seen.add(hit["uri"]); uris.append(hit["uri"])
+                elif not hit:
+                    missing.append(f"{t['artist']} - {t['title']}")
+        n_similar = 0
+        for n, c in enumerate(cands):
+            if n_similar >= count:
+                break
+            if library.core_title(c["title"]) in library_titles:
+                continue
+            progress(n, len(cands), f"Spotify : {c['artist']} - {c['title']}")
+            hit = spotify.find_track(c["artist"], c["title"])
+            if hit and hit["uri"] not in seen:
+                seen.add(hit["uri"]); uris.append(hit["uri"]); n_similar += 1
+                added.append(f"{hit['artists']} - {hit['name']}")
+        if not uris:
+            raise ai.AIUnavailable("Aucun morceau trouvé sur Spotify.")
+        name = body.get("name") or f"{p.data['name']} · similaires"
+        pl = spotify.create_playlist(name, f"Créée par SetBuilder à partir du set « {p.data['name']} ».", uris,
+                                     public=bool(body.get("public")))
+        return {"url": pl["url"], "similar": added, "total": len(uris), "missing": missing}
+
+    return start_job(run)
 
 
 # ------------------------------------------------------------ export

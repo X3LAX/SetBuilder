@@ -7,3 +7,4 @@ numpy==2.5.4
 pyobjc-framework-Quartz==13.0
 pywebview==6.2.1
 uvicorn[standard]==0.54.0
+yt-dlp==2026.10.26
