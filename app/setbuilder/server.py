@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, analysis, covers, export, library, planner, soundcloud, spotify, usb
+from . import ai, analysis, covers, export, library, planner, rekordbox_usb, soundcloud, spotify, usb
 from .config import get_api_key, load_settings, save_settings, set_api_key
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -102,6 +102,7 @@ def enriched(p):
         a = t.get("analysis") or {}
         t["bpm"] = t.get("bpm_override") or a.get("bpm") or 0
         t["camelot"] = t.get("key_override") or a.get("camelot") or "?"
+        t["first_beat"] = a.get("first_beat", 0.0)
         t["energy"] = en.get(t["id"], 0.0)
         t["duration"] = a.get("duration") or t.get("duration") or 0
         t["play"] = planner.play_minutes(t["duration"])
@@ -730,9 +731,16 @@ def usb_export(body: dict):
             if rest:
                 playlists.append(("Suite (set etendu)", rest))
         try:
+            if body.get("mode") == "rekordbox":
+                if not any(v["path"] == body["volume"] for v in usb.list_volumes()):
+                    raise ValueError("Clé USB introuvable : branche-la et actualise.")
+                r = rekordbox_usb.export(body["volume"], p.data["name"], by, playlists,
+                                         replace=bool(body.get("replace")), progress=progress)
+                return {"folder": str(Path(body["volume"]) / "PIONEER"), "copied": r["tracks"], "total": r["tracks"],
+                        "mode": "rekordbox"}
             return usb.export(body["volume"], p.data["name"], by, playlists, bool(body.get("convert_flac")), progress)
-        except ValueError as e:
-            raise ai.AIUnavailable(str(e)) from e
+        except (ValueError, AssertionError) as e:
+            raise ai.AIUnavailable(f"Export interrompu : {e}") from e
 
     return start_job(run)
 

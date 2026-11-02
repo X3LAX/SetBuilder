@@ -9,7 +9,9 @@ Application Mac pour préparer un set DJ pour Rekordbox à partir d'un dossier d
 - **Générateur de set** : durée visée, BPM de départ/arrivée, montée progressive, enchaînements harmoniques, priorité aux remix de titres connus. Édition par glisser-déposer, remplacement par un morceau compatible, verrouillage du début, pré-écoute des transitions.
 - **Set étendu** : le set, puis les titres connus restants, puis le reste en vagues qui remontent en tempo.
 - **Export Rekordbox** : XML Mac et Windows sans hot cues ni beatgrid (Rekordbox refait l'analyse), playlists `.m3u8`, tracklist imprimable.
-- **Clé USB directe pour CDJ / XDJ** : copie le set (et la suite) sur une clé FAT32 / exFAT, un dossier par playlist, morceaux numérotés dans l'ordre, lisible via **FOLDER** sur les lecteurs Pioneer. Conversion FLAC → AIFF en option pour les anciens lecteurs. (Pour les grilles et hot cues, passer par l'export USB de Rekordbox.)
+- **Clé USB directe pour CDJ / XDJ**, deux modes :
+  - **dossiers** (fiable) : un dossier par playlist, morceaux numérotés, lisible via **FOLDER** ; FLAC → AIFF en option pour les anciens lecteurs ;
+  - **clé Rekordbox (expérimental)** : base `PIONEER/rekordbox/export.pdb` + fichiers d'analyse (grille de tempo, formes d'onde) pour les lecteurs « Device Library » (XDJ-RX3, CDJ-3000, XDJ-XZ, CDJ-2000NXS2…), sans passer par Rekordbox. Le format suit les notes de [rekordbox-pdb](https://github.com/fragmede/rekordbox-pdb) (MIT) ; les pages générées sont identiques octet pour octet à celles de Rekordbox sur les fichiers de référence, et chaque clé est relue avant d'être rendue. **Pas encore validé sur un vrai lecteur** : teste ta clé avant une date et garde un plan B. Non affilié à AlphaTheta / Pioneer DJ.
 - **Artistes à mettre en avant, par set** : après l'analyse, choisis les artistes parmi ceux de tes morceaux et classe-les par glisser-déposer.
 - **Spotify, morceaux similaires** : à partir du set ou d'une de tes playlists Spotify, l'app trouve des morceaux du même style (IA et/ou artistes similaires Deezer) et les ajoute à cette playlist ou à une nouvelle.
 - **IA optionnelle et économe** : seulement pour corriger les noms illisibles, noter si un titre est connu et proposer des morceaux similaires. L'analyse audio, les pochettes et le set n'utilisent pas l'IA. Seules les lignes douteuses sont envoyées, avec le modèle le plus léger, et chaque réponse est mémorisée. Trois connexions possibles :
@@ -69,6 +71,7 @@ python3 tests/test_core.py                                   # tests rapides (n�
 - `app/setbuilder/spotify.py` : connexion Spotify, recherche, playlists, similaires Deezer
 - `app/setbuilder/export.py` : XML Rekordbox, m3u8, tracklist
 - `app/setbuilder/usb.py` : copie sur clé USB pour CDJ / XDJ (mode dossiers)
+- `app/setbuilder/rekordbox_usb.py` + `pdb_static.py` : clé Rekordbox expérimentale (export.pdb, ANLZ)
 - `app/setbuilder/server.py` + `app/web/` : interface
 
 Journal en cas de problème : `~/Library/Logs/SetBuilder.log`.

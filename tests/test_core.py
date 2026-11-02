@@ -53,6 +53,31 @@ def test_extended_contains_everything_once():
     assert blocks[0]["ids"] == set_ids
 
 
+def test_rekordbox_pdb_roundtrip():
+    from setbuilder import rekordbox_usb as R
+    tracks = [R.track_row({"id": i, "title": f"Titre {i} é", "path": f"/Contents/x/{i}.mp3", "filename": f"{i}.mp3",
+                           "anlz": f"/PIONEER/USBANLZ/P000/{i:08X}/ANLZ0000.DAT", "date": "2026-11-02",
+                           "comment": "", "artist_id": 1, "album_id": 1, "genre_id": 1, "key_id": 1, "tempo": 12600,
+                           "duration": 240, "sample_rate": 44100, "bitrate": 320, "size": 1, "year": 0,
+                           "file_type": 1}) for i in range(1, 120)]
+    entries = [R.entry_row(k, k, 1) for k in range(1, 120)]
+    db = R.build_pdb({R.TRACKS: tracks, R.PL_ENTRIES: entries, R.ARTISTS: [R.artist_row(1, "HUGEL")],
+                      R.PL_TREE: [R.playlist_row(1, "Set")]})
+    back = R.read_pdb(db)
+    assert len(back[R.TRACKS]) == 119 and len(back[R.PL_ENTRIES]) == 119
+    assert R.track_paths(back[R.TRACKS][5])[0] == "/Contents/x/6.mp3"
+    assert R.dstring("Bad Bunny")[0] == (9 + 1) * 2 + 1 and R.dstring("Dákiti")[0] == 0x90
+
+
+def test_beat_grid_keeps_first_beat_on_one():
+    import struct
+    from setbuilder import rekordbox_usb as R
+    sec = R._beat_grid(120.0, 1.25, 10.0)      # 0.5 s beats, detected beat at 1.25 s
+    beats = [struct.unpack_from(">HHI", sec, 24 + 8 * i) for i in range((len(sec) - 24) // 8)]
+    first = next(b for b in beats if b[2] == 1250)
+    assert first[0] == 1 and beats[0][2] == 250 and beats[0][1] == 12000
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

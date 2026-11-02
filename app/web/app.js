@@ -505,10 +505,14 @@ function renderExport() {
           <li>Branche la clé : elle apparaît sous <b>Devices</b> dans la barre latérale de Rekordbox.</li>
           <li>Glisse la playlist sur la clé : Rekordbox copie les fichiers et sa base (dossier <code>PIONEER</code>).</li></ol></details></div>
       <div class="panel"><h2>Clé USB directe (CDJ / XDJ)</h2>
-        <p class="hint">Sans passer par Rekordbox : un dossier par playlist, morceaux numérotés dans l'ordre. Sur le lecteur : <b>USB › FOLDER › SetBuilder</b>. Pas de beatgrid, hot cues ni forme d'onde pré-analysée. Clé en <b>FAT32</b> ou <b>exFAT</b>.</p>
+        <p class="hint">Sans passer par Rekordbox. Clé en <b>FAT32</b> ou <b>exFAT</b>.</p>
         <div id="usbList" class="muted">Recherche des clés…</div>
-        <div class="params" style="margin-top:10px"><label class="check"><input type="checkbox" id="uExt" checked> Ajouter la suite (set étendu)</label>
-          <label class="check"><input type="checkbox" id="uFlac"> FLAC → AIFF (anciens lecteurs : CDJ-2000NXS, CDJ-900NXS, XDJ-RX…)</label></div>
+        <div class="params" style="margin-top:12px">
+          <label class="check"><input type="radio" name="uMode" value="folders" checked> <span><b>Mode dossiers</b> (fiable) — un dossier par playlist, morceaux numérotés. Sur le lecteur : USB › FOLDER. Sans grille ni forme d'onde.</span></label>
+          <label class="check"><input type="radio" name="uMode" value="rekordbox"> <span><b>Clé Rekordbox</b> <span class="chip warn">expérimental</span> — playlists, BPM, tonalité, grille et formes d'onde comme une clé Rekordbox, pour les lecteurs « Device Library » (XDJ-RX3, CDJ-3000, XDJ-XZ, CDJ-2000NXS2…). Pas encore testé sur un vrai lecteur : essaie-la chez toi avant une date.</span></label>
+          <label class="check" id="uRepL" style="display:none;margin-left:24px"><input type="checkbox" id="uRep"> Cette clé a déjà une bibliothèque Rekordbox : la sauvegarder (renommée) et la remplacer</label>
+          <label class="check"><input type="checkbox" id="uExt" checked> Ajouter la suite (set étendu)</label>
+          <label class="check" id="uFlacL"><input type="checkbox" id="uFlac"> FLAC → AIFF (anciens lecteurs : CDJ-2000NXS, CDJ-900NXS, XDJ-RX…)</label></div>
         <div class="row" style="margin-top:10px"><button class="btn primary" id="uGo" disabled>Copier sur la clé</button><button class="btn" id="uRef">Actualiser</button><button class="btn" id="uEj" disabled>Éjecter</button></div>
         <div id="uRes"></div></div>
     </div>`;
@@ -517,17 +521,33 @@ function renderExport() {
   const gb = b => `${(b / 1e9).toFixed(1)} Go`;
   const loadUsb = async () => {
     const { volumes } = await api("/api/usb/volumes");
+    S.usbVolumes = volumes;
     $("#usbList").innerHTML = volumes.length ? volumes.map((v, i) => `<label class="check" style="margin:4px 0"><input type="radio" name="usbv" value="${esc(v.path)}" ${i ? "" : "checked"}>
         <b>${esc(v.name)}</b> <span class="muted">${v.fs.toUpperCase() || "?"} · ${gb(v.free)} libres sur ${gb(v.size)}</span>
-        ${v.pioneer_ok ? "" : `<span class="chip bad">format non lu par les CDJ : reformate en FAT32 ou exFAT</span>`}${v.has_rekordbox ? `<span class="chip ok">contient déjà une clé Rekordbox (gardée)</span>` : ""}</label>`).join("")
+        ${v.pioneer_ok ? "" : `<span class="chip bad">format non lu par les CDJ : reformate en FAT32 ou exFAT</span>`}${v.has_rekordbox ? `<span class="chip warn">contient déjà une bibliothèque Rekordbox</span>` : ""}</label>`).join("")
       : "Aucune clé USB détectée. Branche-la puis clique sur « Actualiser ».";
     $("#uGo").disabled = $("#uEj").disabled = !volumes.length || !P.set.length;
+    syncMode();
   };
   const vol = () => $("input[name=usbv]:checked")?.value;
+  const mode = () => $("input[name=uMode]:checked").value;
+  const syncMode = () => {
+    const rb = mode() === "rekordbox";
+    $("#uFlacL").style.display = rb ? "none" : "";
+    const v = (S.usbVolumes || []).find(x => x.path === vol());
+    $("#uRepL").style.display = rb && v?.has_rekordbox ? "" : "none";
+    $("#uGo").textContent = rb ? "Créer la clé Rekordbox" : "Copier sur la clé";
+  };
+  $$("input[name=uMode]").forEach(r => r.onchange = syncMode);
+  $("#usbList").addEventListener("change", syncMode);
   loadUsb(); $("#uRef").onclick = loadUsb;
   $("#uGo").onclick = async () => {
-    const r = await job("/api/usb/export", { root: P.root, volume: vol(), extended: $("#uExt").checked, convert_flac: $("#uFlac").checked }, "Copie sur la clé USB");
-    $("#uRes").innerHTML = `<div class="row" style="margin-top:12px"><span class="chip ok">${r.total} morceaux sur la clé</span><span class="muted">${r.copied} copiés (les autres y étaient déjà) · ${esc(r.folder)}</span></div>`;
+    const rb = mode() === "rekordbox";
+    const r = await job("/api/usb/export", { root: P.root, volume: vol(), mode: mode(), replace: $("#uRep").checked,
+      extended: $("#uExt").checked, convert_flac: $("#uFlac").checked }, rb ? "Création de la clé Rekordbox (analyse des formes d'onde)" : "Copie sur la clé USB");
+    $("#uRes").innerHTML = rb
+      ? `<div class="banner" style="margin-top:12px"><span class="chip ok">${r.total} morceaux</span><span>Clé Rekordbox créée et relue sans erreur. Sur la XDJ / CDJ : <b>USB › Playlist</b>. Teste-la avant une date (grille, BPM, formes d'onde).</span></div>`
+      : `<div class="row" style="margin-top:12px"><span class="chip ok">${r.total} morceaux sur la clé</span><span class="muted">${r.copied} copiés (les autres y étaient déjà) · ${esc(r.folder)}</span></div>`;
     toast("Clé prête. Pense à l'éjecter avant de la retirer.");
   };
   $("#uEj").onclick = async () => { await api("/api/usb/eject", { volume: vol() }); toast("Clé éjectée, tu peux la retirer."); loadUsb(); };
