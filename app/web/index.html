@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SetBuilder</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside id="side">
+  <div class="logo"><img src="icon.png" width="26" height="26" alt="">SetBuilder</div>
+  <div id="projBox">
+    <div class="label">Projet</div>
+    <button id="projBtn" class="proj">Choisir un projet</button>
+  </div>
+  <nav>
+    <a data-view="import"><b>1</b>Importer</a>
+    <a data-view="library"><b>2</b>Bibliothèque</a>
+    <a data-view="set"><b>3</b>Set</a>
+    <a data-view="export"><b>4</b>Export Rekordbox</a>
+  </nav>
+  <nav class="bottom">
+    <a data-view="settings">Réglages</a>
+  </nav>
+</aside>
+
+<main>
+  <header>
+    <h1 id="title">Projets</h1>
+    <div id="job" hidden><div class="msg"></div><div class="bar"><i></i></div></div>
+  </header>
+  <section id="view"></section>
+</main>
+
+<footer id="player">
+  <img id="pCover" alt="">
+  <div class="pInfo"><div id="pTitle">—</div><div id="pSub" class="muted"></div></div>
+  <button id="pPlay" class="round" title="Lecture / pause">▶</button>
+  <input id="pSeek" type="range" min="0" max="1000" value="0">
+  <span id="pTime" class="muted">0:00</span>
+  <input id="pVol" type="range" min="0" max="100" value="80" title="Volume">
+</footer>
+<audio id="a1" preload="none"></audio><audio id="a2" preload="none"></audio>
+<div id="toast"></div>
+<div id="modal" hidden><div class="card"></div></div>
+<script src="app.js"></script>
+</body>
+</html>

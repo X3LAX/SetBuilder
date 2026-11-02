@@ -1,0 +1,6 @@
+#!/bin/bash
+# SetBuilder launcher: runs the bundled Python with the app code.
+HERE="$(cd "$(dirname "$0")/../Resources" && pwd)"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+LOG="$HOME/Library/Logs/SetBuilder.log"
+exec "$HERE/venv/bin/python" "$HERE/app/main.py" "$@" >>"$LOG" 2>&1
