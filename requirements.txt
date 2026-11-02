@@ -1,5 +1,5 @@
 anthropic==2.3.0
-essentia==2.1b6.dev1438; sys_platform == "darwin"
+essentia>=2.1b6.dev90 ; sys_platform == "darwin"
 fastapi==0.162.0
 httpx==0.28.1
 mutagen==1.48.1
