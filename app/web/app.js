@@ -365,7 +365,7 @@ function renderSet() {
       <td class="num">${t.bpm.toFixed(t.bpm % 1 ? 1 : 0)}</td><td>${keyChip(t.camelot)}</td><td>${eBar(t.energy)}</td><td>${stars(t.known)}</td>
       <td>${t.remix ? `<span class="chip remix">remix</span>` : ""}${t.quiet ? `<span class="chip warn">volume faible</span>` : ""}</td>
       <td class="num"><button class="icon play" title="Écouter">▶</button><button class="icon mix" title="Pré-écouter la transition vers le suivant" ${i + 1 < P.set.length ? "" : "disabled"}>⇄</button>
-      <button class="icon rep" title="Remplacer par un morceau compatible">↻</button><button class="icon lock ${i <= S.lock ? "on" : ""}" title="Garder le début du set jusqu'ici quand je regénère">🔒</button>
+      <button class="icon rep" title="Remplacer par un morceau compatible">↻</button><button class="icon lock ${i <= S.lock ? "on" : ""}" title="Garder le début du set jusqu'ici lors d'une nouvelle génération">🔒</button>
       <button class="icon del" title="Retirer du set">✕</button><button class="icon finder" title="Afficher dans le Finder">⌕</button></td></tr>
       ${tr ? `<tr class="trans"><td></td><td colspan="9"><span class="tdot ${tr}">${{ ok: "● enchaînement OK", moyen: "● enchaînement possible", clash: "● clash de tonalité ou de tempo" }[tr]}</span></td></tr>` : ""}`;
   }).join("");
@@ -394,7 +394,7 @@ function renderSet() {
     </div>
     <div class="panel" id="artPanel"></div>
     ${P.set.length ? `<div class="panel"><table><thead><tr><th>#</th><th>Début</th><th></th><th>Morceau</th><th>BPM</th><th>Clé</th><th>Énergie</th><th>Connu</th><th></th><th></th></tr></thead><tbody id="setBody">${rows}</tbody></table></div>
-    ${P.blocks.length > 1 ? `<details class="panel fold"><summary><h2>Set étendu (au cas où)</h2><span class="muted">${P.blocks.slice(1).reduce((n, b) => n + b.ids.length, 0)} morceaux de plus</span></summary>
+    ${P.blocks.length > 1 ? `<details class="panel fold"><summary><h2>Set étendu</h2><span class="muted">${P.blocks.slice(1).reduce((n, b) => n + b.ids.length, 0)} morceaux de plus</span></summary>
       <div class="row"><span class="spacer"></span><button class="btn small" id="ext">Recalculer la suite</button></div>
       <p class="hint" style="margin-top:8px">Même début que le set, puis les titres connus restants, puis le reste en vagues qui remontent à chaque fois.</p>
       ${P.blocks.slice(1).map(b => `<div class="block"><h3>${esc(b.name)} <span>${b.ids.length} morceaux · ${fmtH(b.ids.reduce((s, i) => s + (tm[i]?.play || 0), 0) / 60)}</span></h3>
@@ -550,7 +550,7 @@ function renderExport() {
         <div id="usbList" class="muted">Recherche des clés…</div>
         <div class="params" style="margin-top:12px">
           <label class="check"><input type="radio" name="uMode" value="folders" checked> <span><b>Mode dossiers</b> (fiable) — un dossier par playlist, morceaux numérotés. Sur le lecteur : USB › FOLDER. Sans grille ni forme d'onde.</span></label>
-          <label class="check"><input type="radio" name="uMode" value="rekordbox"> <span><b>Clé Rekordbox</b> <span class="chip warn">expérimental</span> — playlists, BPM, tonalité, grille et formes d'onde comme une clé Rekordbox, pour les lecteurs « Device Library » (XDJ-RX3, CDJ-3000, XDJ-XZ, CDJ-2000NXS2…). Pas encore testé sur un vrai lecteur : essaie-la chez toi avant une date.</span></label>
+          <label class="check"><input type="radio" name="uMode" value="rekordbox"> <span><b>Clé Rekordbox</b> <span class="chip warn">expérimental</span> — playlists, BPM, tonalité, grille et formes d'onde comme une clé Rekordbox, pour les lecteurs « Device Library » (XDJ-RX3, CDJ-3000, XDJ-XZ, CDJ-2000NXS2…).</span></label>
           <label class="check" id="uRepL" style="display:none;margin-left:24px"><input type="checkbox" id="uRep"> Cette clé a déjà une bibliothèque Rekordbox : la sauvegarder (renommée) et la remplacer</label>
           <label class="check"><input type="checkbox" id="uExt" checked> Ajouter la suite (set étendu)</label>
           <label class="check" id="uFlacL"><input type="checkbox" id="uFlac"> FLAC → AIFF (anciens lecteurs : CDJ-2000NXS, CDJ-900NXS, XDJ-RX…)</label></div>
@@ -587,9 +587,9 @@ function renderExport() {
     const r = await job("/api/usb/export", { root: P.root, volume: vol(), mode: mode(), replace: $("#uRep").checked,
       extended: $("#uExt").checked, convert_flac: $("#uFlac").checked }, rb ? "Création de la clé Rekordbox (analyse des formes d'onde)" : "Copie sur la clé USB");
     $("#uRes").innerHTML = rb
-      ? `<div class="banner" style="margin-top:12px"><span class="chip ok">${r.total} morceaux</span><span>Clé Rekordbox créée et relue sans erreur. Sur la XDJ / CDJ : <b>USB › Playlist</b>. Teste-la avant une date (grille, BPM, formes d'onde).</span></div>`
+      ? `<div class="banner" style="margin-top:12px"><span class="chip ok">${r.total} morceaux</span><span>Clé Rekordbox créée et relue sans erreur. Sur la XDJ / CDJ : <b>USB › Playlist</b>.</span></div>`
       : `<div class="row" style="margin-top:12px"><span class="chip ok">${r.total} morceaux sur la clé</span><span class="muted">${r.copied} copiés (les autres y étaient déjà) · ${esc(r.folder)}</span></div>`;
-    toast("Clé prête. Pense à l'éjecter avant de la retirer.");
+    toast("Clé prête. Éjecte-la avant de la débrancher.");
   };
   $("#uEj").onclick = async () => { await api("/api/usb/eject", { volume: vol() }); toast("Clé éjectée, tu peux la retirer."); loadUsb(); };
   $("#xGo").onclick = async () => {
@@ -609,7 +609,7 @@ function renderSoundcloud() {
   const P = S.proj;
   $("#view").innerHTML = `
     <div class="panel"><h2>Télécharger depuis SoundCloud</h2>
-      <p class="hint">Colle le lien d'un morceau, d'une playlist (set), d'un profil ou de ses likes (<code>…/likes</code>). L'app prend le fichier original quand l'artiste autorise le téléchargement, sinon la meilleure qualité d'écoute (souvent 128–160 kbps). Pochette et infos sont ajoutées, et les formats que Rekordbox ne lit pas sont convertis. Respecte les droits des artistes : privilégie les « free download ».</p>
+      <p class="hint">Colle le lien d'un morceau, d'une playlist (set), d'un profil ou de ses likes (<code>…/likes</code>). L'app prend le fichier original quand l'artiste autorise le téléchargement, sinon la meilleure qualité d'écoute (souvent 128–160 kbps). Pochette et infos sont ajoutées, et les formats que Rekordbox ne lit pas sont convertis.</p>
       <div class="row"><input type="text" id="scUrl" placeholder="https://soundcloud.com/…" style="flex:1;min-width:320px">
         <button class="btn primary" id="scGo">Télécharger</button></div>
       <div class="row" style="margin-top:12px">
