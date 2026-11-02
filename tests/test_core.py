@@ -98,6 +98,27 @@ def test_librosa_backend():
         print("  librosa:", lib["bpm"], lib["camelot"])
 
 
+def test_analysis_on_generated_track():
+    """Decode + analyse a generated 124 BPM bass line with both backends (runs anywhere ffmpeg exists)."""
+    import shutil, subprocess, tempfile
+    from setbuilder import analysis
+    if not shutil.which("ffmpeg"):
+        return
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "beat.wav"
+        expr = "0.7*sin(2*PI*110*t)*exp(-12*mod(t,60/124))+0.2*sin(2*PI*220*t)*exp(-12*mod(t,60/124))"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"aevalsrc='{expr}':d=40:s=44100",
+                        str(f)], check=True)
+        for force in (False, True):
+            analysis.FORCE_LIBROSA = force
+            try:
+                r = analysis.analyze_file(f)
+            finally:
+                analysis.FORCE_LIBROSA = False
+            assert 120 <= r["bpm"] <= 128, (force, r["bpm"])
+            assert r["camelot"] in analysis.CAMELOT.values() and r["duration"] > 39
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
