@@ -13,14 +13,24 @@
     <div class="label">Projet</div>
     <button id="projBtn" class="proj">Choisir un projet</button>
   </div>
-  <nav>
-    <a data-view="import"><b>1</b>Importer</a>
-    <a data-view="library"><b>2</b>Bibliothèque</a>
-    <a data-view="set"><b>3</b>Set</a>
-    <a data-view="export"><b>4</b>Export Rekordbox</a>
-  </nav>
+  <div>
+    <div class="label">Préparer le set</div>
+    <nav>
+      <a data-view="import"><b>1</b>Importer<i class="badge" id="bImport"></i></a>
+      <a data-view="library"><b>2</b>Bibliothèque<i class="badge" id="bLibrary"></i></a>
+      <a data-view="set"><b>3</b>Set<i class="badge" id="bSet"></i></a>
+      <a data-view="export"><b>4</b>Export<i class="badge" id="bExport"></i></a>
+    </nav>
+  </div>
+  <div>
+    <div class="label">Outils</div>
+    <nav>
+      <a data-view="soundcloud"><b class="tool sc">☁</b>SoundCloud</a>
+      <a data-view="spotify"><b class="tool sp">♫</b>Spotify</a>
+    </nav>
+  </div>
   <nav class="bottom">
-    <a data-view="settings">Réglages</a>
+    <a data-view="settings"><b class="tool">⚙</b>Réglages</a>
   </nav>
 </aside>
 

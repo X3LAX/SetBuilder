@@ -38,10 +38,17 @@ Mise à jour : `git pull && ./install.sh`.
 
 ## Utilisation
 
-1. **Importer** : choisis tes dossiers, vérifie les noms (▶ pour écouter, « ✦ Corriger avec l'IA »), puis importe.
-2. **Bibliothèque** : « Analyser », puis ajuste ce qui doit l'être (nom, BPM, clé, note « connu », forcer / exclure).
-3. **Set** : règle la durée et le tempo, « Générer le set », puis ajuste.
-4. **Export Rekordbox** : exporte le XML et suis les étapes affichées pour l'importer.
+Préparer un set, étape par étape (le menu indique où tu en es) :
+
+1. **Importer** : choisis ou glisse tes dossiers, vérifie les noms (▶ pour écouter, ✦ pour corriger les noms douteux avec l'IA), importe. L'analyse se lance ensuite toute seule.
+2. **Bibliothèque** : ajuste ce qui doit l'être (nom, BPM, clé, note « connu », forcer / exclure).
+3. **Set** : choisis tes artistes à mettre en avant, règle la durée et le tempo, « Générer le set », puis ajuste.
+4. **Export** : XML Rekordbox d'un côté, clé USB directe pour CDJ / XDJ de l'autre.
+
+Outils à part :
+
+- **SoundCloud** : télécharger dans le projet (puis importer) ou dans n'importe quel dossier.
+- **Spotify** : connexion, puis compléter une de tes playlists (ou partir du set) avec des morceaux similaires.
 
 Un dossier existant qui contient un sous-dossier `Tracks` peut être ouvert directement (« Ouvrir un dossier existant »).
 

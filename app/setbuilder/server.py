@@ -562,17 +562,18 @@ def suggest(root: str, pos: int):
 
 @app.post("/api/soundcloud")
 def soundcloud_download(body: dict):
-    p = project(body["root"])
+    """Download into the project (then the import screen) or into any folder."""
+    p = project(body["root"]) if body.get("root") else None
     url = body.get("url", "").strip()
     if not soundcloud.is_soundcloud(url):
         raise HTTPException(400, "Colle un lien SoundCloud (morceau, playlist/set, profil ou likes).")
+    dest = p.root / library.DOWNLOADS / "SoundCloud" if p else Path(body.get("dest") or library.MUSIC / "SoundCloud").expanduser()
 
     def run(progress):
-        dest = p.root / library.DOWNLOADS / "SoundCloud"
         files, errors = soundcloud.download(url, dest, progress)
         progress(0, 1, "Lecture des fichiers…")
-        rows = library.preview_import(files) if files else []
-        return {"rows": rows, "errors": errors[:20], "count": len(files)}
+        rows = library.preview_import(files) if (files and p) else []
+        return {"rows": rows, "files": files, "errors": errors[:20], "count": len(files)}
 
     return start_job(run)
 

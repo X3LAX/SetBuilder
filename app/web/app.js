@@ -95,7 +95,19 @@ function go(view) {
   S.view = view;
   $$("nav a").forEach(a => a.classList.toggle("on", a.dataset.view === view));
   $("#projBtn").textContent = S.proj ? S.proj.name : "Choisir un projet";
-  ({ home: renderHome, import: renderImport, library: renderLibrary, set: renderSet, export: renderExport, settings: renderSettings })[view]();
+  badges();
+  ({ home: renderHome, import: renderImport, library: renderLibrary, set: renderSet, export: renderExport,
+     soundcloud: renderSoundcloud, spotify: renderSpotify, settings: renderSettings })[view]();
+}
+
+// Where am I? small counters next to each step.
+function badges() {
+  const P = S.proj, set = (id, txt, cls = "") => { const b = $(id); b.textContent = txt; b.className = "badge " + cls; };
+  if (!P) { ["#bImport", "#bLibrary", "#bSet", "#bExport"].forEach(i => set(i, "")); return; }
+  const n = P.tracks.length, a = P.tracks.filter(t => t.analysed).length;
+  set("#bImport", n ? `${n}` : "", n ? "done" : "");
+  set("#bLibrary", !n ? "" : a < n ? `${n - a} à analyser` : "✓", !n ? "" : a < n ? "todo" : "done");
+  set("#bSet", P.set.length ? fmtH(P.set_minutes) : "", P.set.length ? "done" : "");
 }
 
 async function loadProject(root) { S.proj = await api(`/api/project?root=${encodeURIComponent(root)}`); }
@@ -135,21 +147,22 @@ async function renderHome() {
 function renderImport() {
   $("#title").textContent = `Importer — ${S.proj.name}`;
   const rows = S.rows;
-  const has = S.state?.ai?.ok;
+  const aiOk = S.state?.ai?.ok;
   $("#view").innerHTML = `
     <div class="panel"><h2>Ajouter des morceaux</h2>
-      <p class="hint">Choisis des dossiers même mal rangés (sous-dossiers, noms bizarres, sans pochette) : l'app trouve tous les fichiers audio, propose des noms propres « Artiste - Titre (Remix) », repère les doublons, puis copie tout dans <code>${esc(S.proj.root)}/Tracks</code> et ajoute les pochettes manquantes.</p>
-      <div class="row"><button class="btn primary" id="iFolders">Choisir des dossiers…</button><button class="btn" id="iFiles">Choisir des fichiers…</button></div></div>
-    <div class="panel"><h2>Depuis SoundCloud</h2>
-      <p class="hint">Colle le lien d'un morceau, d'une playlist (set), d'un profil ou de ses likes (<code>…/likes</code>). Le fichier original est pris quand l'artiste autorise le téléchargement, sinon la meilleure qualité en écoute (souvent 128–160 kbps). Pochette et infos sont ajoutées. Respecte les droits des artistes : privilégie les « free download ».</p>
-      <div class="row"><input type="text" id="iSc" placeholder="https://soundcloud.com/…" style="width:460px"><button class="btn primary" id="iScGo">Télécharger</button></div></div>
+      <p class="hint">Dossiers mal rangés acceptés : sous-dossiers, noms bizarres, fichiers sans pochette. L'app trouve tous les fichiers audio, propose des noms propres « Artiste - Titre (Remix) », repère les doublons, puis copie tout dans le projet et ajoute les pochettes manquantes. Tes originaux ne sont jamais modifiés.</p>
+      <div class="row"><button class="btn primary" id="iFolders">Choisir des dossiers…</button><button class="btn" id="iFiles">Choisir des fichiers…</button>
+        <span class="spacer"></span><button class="btn" id="iSc">☁ Depuis SoundCloud</button></div>
+      <div class="drop" id="iDrop">…ou glisse des dossiers / fichiers ici</div></div>
     ${rows ? `<div class="panel">
       <div class="row" style="margin-bottom:12px"><h2 style="margin:0">${rows.length} fichiers trouvés</h2>
         <span class="chip warn">${rows.filter(r => !r.confident).length} à vérifier</span>
         <span class="chip">${rows.filter(r => !r.has_cover).length} sans pochette</span>
         <span class="chip warn">${rows.filter(r => r.dup_of).length} doublons</span><span class="spacer"></span>
-        <button class="btn" id="iAI" ${has ? "" : "disabled title='Connecte ton abonnement Claude ou une clé API dans Réglages'"}>✦ Corriger les noms avec l'IA</button>
-        <label class="check"><input type="checkbox" id="iCovers" checked> Chercher les pochettes</label>
+        <button class="btn small" id="iClear">Vider</button>
+        <button class="btn" id="iAI" ${aiOk ? "" : "disabled title='Connecte une IA dans Réglages'"}>✦ Corriger les noms douteux</button>
+        <label class="check"><input type="checkbox" id="iCovers" checked> Pochettes</label>
+        <label class="check"><input type="checkbox" id="iAn" checked> Analyser ensuite</label>
         <button class="btn primary" id="iRun">Importer ${rows.filter(r => !r.skip).length} morceaux</button></div>
       <table><thead><tr><th style="width:28px"></th><th style="width:28px"></th><th>Fichier d'origine</th><th style="width:26%">Artiste</th><th style="width:34%">Titre</th><th>Durée</th><th>État</th></tr></thead>
       <tbody>${rows.map((r, i) => `<tr data-i="${i}">
@@ -158,38 +171,50 @@ function renderImport() {
         <td><input type="text" class="ia" value="${esc(r.artist)}"></td><td><input type="text" class="it" value="${esc(r.title)}"></td>
         <td class="num muted">${fmt(r.duration)}</td>
         <td>${r.by_ai ? `<span class="chip ai">IA</span>` : ""}${r.confident ? "" : `<span class="chip warn">à vérifier</span>`}${r.dup_of ? `<span class="chip warn">doublon</span>` : ""}${r.has_cover ? "" : `<span class="chip">sans pochette</span>`}${r.duration < 110 ? `<span class="chip bad">extrait</span>` : ""}</td></tr>`).join("")}</tbody></table></div>` : ""}`;
-  const scan = async sources => {
-    if (!sources.length) return;
-    S.state = S.state || await api("/api/state");
-    S.rows = await job("/api/import/preview", { sources }, "Recherche des fichiers audio");
-    S.rows.forEach(r => r.skip = r.duration < 20);
-    renderImport();
-  };
-  $("#iFolders").onclick = async () => scan(await pickFolders(true));
-  $("#iScGo").onclick = async () => {
-    const url = $("#iSc").value.trim(); if (!url) return toast("Colle un lien SoundCloud.");
-    const r = await job("/api/soundcloud", { root: S.proj.root, url }, "Téléchargement SoundCloud");
-    const known = new Set((S.rows || []).map(x => x.src));
-    S.rows = (S.rows || []).concat(r.rows.filter(x => !known.has(x.src)));
-    toast(r.count ? `${r.count} morceaux téléchargés : vérifie les noms puis importe.` + (r.errors.length ? ` ${r.errors.length} erreurs.` : "") : (r.errors[0] || "Rien de nouveau à télécharger."), !r.count && r.errors.length);
-    renderImport();
-  };
-  $("#iFiles").onclick = async () => scan(await pickFiles());
+  $("#iFolders").onclick = async () => scanSources(await pickFolders(true));
+  $("#iFiles").onclick = async () => scanSources(await pickFiles());
+  $("#iSc").onclick = () => go("soundcloud");
+  bindDrop($("#iDrop"));
   if (!rows) return;
   $$("tbody tr").forEach(tr => {
     const r = rows[tr.dataset.i];
     $(".inc", tr).onchange = e => { r.skip = !e.target.checked; $("#iRun").textContent = `Importer ${rows.filter(x => !x.skip).length} morceaux`; };
     $(".ia", tr).oninput = e => r.artist = e.target.value;
-    $(".pv", tr).onclick = () => player.playUrl(`/api/preview-audio?path=${encodeURIComponent(r.src)}`, r.title || r.rel, r.artist || r.folder);
     $(".it", tr).oninput = e => r.title = e.target.value;
+    $(".pv", tr).onclick = () => player.playUrl(`/api/preview-audio?path=${encodeURIComponent(r.src)}`, r.title || r.rel, r.artist || r.folder);
   });
-  $("#iAI").onclick = async () => { S.rows = await job("/api/import/ai", { rows }, "L'IA corrige les noms"); renderImport(); toast("Noms corrigés : vérifie les lignes « à vérifier »."); };
+  $("#iClear").onclick = () => { S.rows = null; renderImport(); };
+  $("#iAI").onclick = async () => { S.rows = await job("/api/import/ai", { rows }, "L'IA corrige les noms douteux"); renderImport(); toast("Noms corrigés : vérifie les lignes encore « à vérifier »."); };
   $("#iRun").onclick = async () => {
     const r = await job("/api/import/run", { root: S.proj.root, rows, fetch_covers: $("#iCovers").checked }, "Import");
-    S.rows = null; toast(`${r.added} morceaux importés, ${r.covers} pochettes ajoutées. Lance maintenant l'analyse.`);
+    const analyse = $("#iAn").checked;
+    S.rows = null; toast(`${r.added} morceaux importés, ${r.covers} pochettes ajoutées.`);
+    if (analyse) await job("/api/analyze", { root: S.proj.root }, "Analyse BPM / tonalité / énergie").catch(() => {});
     await loadProject(S.proj.root); go("library");
   };
 }
+
+async function scanSources(sources) {
+  if (!sources?.length) return;
+  S.state = S.state || await api("/api/state");
+  const rows = await job("/api/import/preview", { sources }, "Recherche des fichiers audio");
+  rows.forEach(r => r.skip = r.duration < 20);
+  const known = new Set((S.rows || []).map(x => x.src));
+  S.rows = (S.rows || []).concat(rows.filter(x => !known.has(x.src)));
+  if (S.view !== "import") go("import"); else renderImport();
+}
+
+// Drag & drop: the app window passes the real paths of dropped files (window.onNativeDrop).
+function bindDrop(el) {
+  ["dragenter", "dragover"].forEach(ev => el.addEventListener(ev, e => { e.preventDefault(); el.classList.add("on"); }));
+  ["dragleave", "drop"].forEach(ev => el.addEventListener(ev, () => el.classList.remove("on")));
+}
+window.onNativeDrop = paths => {
+  if (!S.proj) return toast("Choisis d'abord un projet.");
+  scanSources(paths);
+};
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => { e.preventDefault(); if (!native()) toast("Le glisser-déposer marche dans l'app SetBuilder ; ici, utilise les boutons."); });
 
 // ------------------------------------------------------------------ library
 
@@ -204,6 +229,8 @@ function renderLibrary() {
   const has = S.state?.ai?.ok;
   const th = (k, l) => `<th class="sort" data-k="${k}">${l}${sk === k ? (sd > 0 ? " ↑" : " ↓") : ""}</th>`;
   $("#view").innerHTML = `
+    ${ts.length && nA < ts.length ? `<div class="banner warn"><b>${ts.length - nA} morceaux pas encore analysés.</b><span>BPM, tonalité et énergie sont nécessaires pour créer le set.</span><span class="spacer"></span><button class="btn primary" id="lAn2">Analyser maintenant</button></div>` : ""}
+    ${ts.length && nA === ts.length && !P.set.length ? `<div class="banner"><b>Tout est analysé.</b><span>Prochaine étape : choisir tes artistes et générer le set.</span><span class="spacer"></span><button class="btn primary" id="lGoSet">Aller au set →</button></div>` : ""}
     <div class="panel"><div class="row">
       <div class="stats"><div class="stat"><b>${ts.length}</b><span>morceaux</span></div>
         <div class="stat"><b>${nA}/${ts.length}</b><span>analysés</span></div>
@@ -234,6 +261,8 @@ function renderLibrary() {
     const errs = Object.keys(r.errors); toast(errs.length ? `${errs.length} fichiers illisibles : ${errs.slice(0, 3).join(", ")}` : `${r.analysed} morceaux analysés.`, !!errs.length);
     refresh();
   };
+  if ($("#lAn2")) $("#lAn2").onclick = () => $("#lAn").click();
+  if ($("#lGoSet")) $("#lGoSet").onclick = () => go("set");
   $("#lCov").onclick = async () => { const r = await job("/api/covers/fetch", { root: P.root }, "Recherche des pochettes"); toast(`${r.covers} pochettes trouvées sur ${r.asked}.`); refresh(); };
   $("#lFix").onclick = () => {
     const c = modal(`<h2>Ranger les noms des fichiers</h2><p class="hint">Renomme chaque fichier en « Artiste - Titre (Version) » et met à jour ses tags. Avec l'IA, les noms illisibles sont aussi corrigés.</p>
@@ -328,21 +357,11 @@ function renderSet() {
     </div>
     <div class="panel" id="artPanel"></div>
     ${P.set.length ? `<div class="panel"><table><thead><tr><th>#</th><th>Début</th><th></th><th>Morceau</th><th>BPM</th><th>Clé</th><th>Énergie</th><th>Connu</th><th></th><th></th></tr></thead><tbody id="setBody">${rows}</tbody></table></div>
-    <div class="panel"><h2>Spotify : playlist de morceaux similaires</h2>
-      <p class="hint">Trouve des morceaux du même style et d'un tempo proche, à partir de ce set ou d'une de tes playlists Spotify, et les ajoute sur ton Spotify. Source : l'IA (un seul appel) et/ou Deezer (artistes similaires, sans IA). Les morceaux déjà présents sont ignorés.</p>
-      <div class="row" style="margin-bottom:10px"><label class="field">Partir de<select id="spFrom"><option value="set">Ce set</option><option value="pl">Une playlist Spotify</option></select></label>
-        <label class="field" id="spUrlL" style="display:none;flex:1;min-width:280px">Lien de la playlist<input type="text" id="spUrl" placeholder="https://open.spotify.com/playlist/…"></label>
-        <label class="field" id="spTgtL" style="display:none">Ajouter dans<select id="spTgt"><option value="same">Cette même playlist</option><option value="new">Une nouvelle playlist</option></select></label></div>
-      <div class="row"><label class="field">Nombre<select id="spN"><option>20</option><option selected>40</option><option>60</option><option>100</option></select></label>
-        <label class="field">Source<select id="spSrc"><option value="auto">IA + Deezer</option><option value="ia">IA seulement</option><option value="deezer">Deezer seulement (sans IA)</option></select></label>
-        <label class="check" style="margin-top:18px"><input type="checkbox" id="spSet"> Inclure les morceaux du set</label>
-        <label class="check" style="margin-top:18px"><input type="checkbox" id="spPub"> Playlist publique</label>
-        <button class="btn primary" id="spGo" style="margin-top:18px">Créer la playlist</button></div>
-      <div id="spRes"></div></div>
-    ${P.blocks.length > 1 ? `<div class="panel"><div class="row"><h2 style="margin:0">Set étendu (au cas où)</h2><span class="spacer"></span><button class="btn small" id="ext">Recalculer la suite</button></div>
+    ${P.blocks.length > 1 ? `<details class="panel fold"><summary><h2>Set étendu (au cas où)</h2><span class="muted">${P.blocks.slice(1).reduce((n, b) => n + b.ids.length, 0)} morceaux de plus</span></summary>
+      <div class="row"><span class="spacer"></span><button class="btn small" id="ext">Recalculer la suite</button></div>
       <p class="hint" style="margin-top:8px">Même début que le set, puis les titres connus restants, puis le reste en vagues qui remontent à chaque fois.</p>
       ${P.blocks.slice(1).map(b => `<div class="block"><h3>${esc(b.name)} <span>${b.ids.length} morceaux · ${fmtH(b.ids.reduce((s, i) => s + (tm[i]?.play || 0), 0) / 60)}</span></h3>
-      <table><tbody>${b.ids.map(i => tm[i]).filter(Boolean).map(t => `<tr data-id="${t.id}"><td style="width:30px"><button class="icon play">▶</button></td><td class="name"><div class="t">${esc(t.artist)} — ${esc(t.title)}</div></td><td class="num" style="width:60px">${t.bpm}</td><td style="width:60px">${keyChip(t.camelot)}</td><td style="width:90px">${stars(t.known)}</td></tr>`).join("")}</tbody></table></div>`).join("")}</div>` : ""}`
+      <table><tbody>${b.ids.map(i => tm[i]).filter(Boolean).map(t => `<tr data-id="${t.id}"><td style="width:30px"><button class="icon play">▶</button></td><td class="name"><div class="t">${esc(t.artist)} — ${esc(t.title)}</div></td><td class="num" style="width:60px">${t.bpm}</td><td style="width:60px">${keyChip(t.camelot)}</td><td style="width:90px">${stars(t.known)}</td></tr>`).join("")}</tbody></table></div>`).join("")}</details>` : ""}`
       : `<div class="empty"><b>Pas encore de set</b>Règle la durée et le tempo, puis « Générer le set ».</div>`}`;
   $("#pSh").value = pr.shape; $("#pH").value = pr.strictness;
   $("#pD").oninput = e => $("#dV").textContent = fmtH(+e.target.value);
@@ -352,22 +371,6 @@ function renderSet() {
     toast(`Set de ${S.proj.set.length} morceaux (${fmtH(S.proj.set_minutes)}).`); renderSet();
   };
   if ($("#unlock")) $("#unlock").onclick = e => { e.preventDefault(); S.lock = -1; renderSet(); };
-  if ($("#spFrom")) $("#spFrom").onchange = e => {
-    const pl = e.target.value === "pl";
-    $("#spUrlL").style.display = $("#spTgtL").style.display = pl ? "" : "none";
-    $("#spSet").closest("label").style.display = pl ? "none" : "";
-  };
-  if ($("#spGo")) $("#spGo").onclick = async () => {
-    const st = await api("/api/spotify/status");
-    if (!st.connected) { toast("Connecte d'abord Spotify (Réglages › Spotify).", true); return; }
-    const fromPl = $("#spFrom").value === "pl", url = $("#spUrl").value.trim();
-    if (fromPl && !url) return toast("Colle le lien de ta playlist Spotify.", true);
-    const r = await job("/api/spotify/similar", { root: P.root, count: +$("#spN").value, source: $("#spSrc").value, include_set: $("#spSet").checked,
-      public: $("#spPub").checked, playlist: fromPl ? url : "", target: $("#spTgt").value }, "Playlist Spotify");
-    $("#spRes").innerHTML = `<div class="row" style="margin-top:12px"><span class="chip ok">${r.similar.length} morceaux ajoutés</span><button class="btn small" id="spOpen">Ouvrir dans Spotify</button></div>
-      <div class="muted" style="margin-top:8px;font-size:12px">${r.similar.slice(0, 60).map(esc).join(" · ")}</div>`;
-    $("#spOpen").onclick = () => api("/api/open", { path: r.url });
-  };
   if ($("#ext")) $("#ext").onclick = async () => { S.proj = await job("/api/set/extend", { root: P.root }, "Calcul de la suite"); renderSet(); };
   drawChart(pr);
   renderArtists();
@@ -476,37 +479,40 @@ window.addEventListener("resize", () => { if (S.view === "set") drawChart(Object
 
 function renderExport() {
   const P = S.proj, s = S.state?.settings || {};
-  $("#title").textContent = `Export Rekordbox — ${P.name}`;
+  $("#title").textContent = `Export — ${P.name}`;
   $("#view").innerHTML = `
-    <div class="panel"><h2>Fichiers à créer</h2>
-      ${P.set.length ? "" : `<p class="hint" style="color:var(--warn)">Tu n'as pas encore de set : seule la collection sera exportée.</p>`}
-      <div class="params" style="max-width:560px">
-        <label class="check"><input type="checkbox" id="xM" checked> XML Rekordbox pour ce Mac</label>
-        <label class="check"><input type="checkbox" id="xW"> XML Rekordbox pour Windows</label>
-        <label class="field" id="xWr" style="margin-left:24px">Dossier sur le PC (le projet « ${esc(P.name)} » sera dedans)<input type="text" id="xWroot" value="${esc(s.windows_root || "C:/DJ Music")}"></label>
-        <label class="check"><input type="checkbox" id="xU" checked> Playlists .m3u8</label>
-        <label class="check"><input type="checkbox" id="xH" checked> Tracklist imprimable (BPM, clé, heure de passage)</label>
-        <div><button class="btn primary" id="xGo">Exporter</button></div></div>
-      <div id="xRes"></div></div>
-    <div class="panel"><h2>Clé USB pour CDJ / XDJ (direct, sans Rekordbox)</h2>
-      <p class="hint">Copie le set sur la clé, un dossier par playlist, morceaux numérotés dans l'ordre. Sur le lecteur : <b>USB › FOLDER › SetBuilder</b>. Les lecteurs lisent les fichiers mais sans beatgrid, hot cues ni forme d'onde pré-analysée (le BPM peut manquer selon le modèle). Pour une clé complète, utilise l'export Rekordbox ci-dessous. Clé en <b>FAT32</b> ou <b>exFAT</b>.</p>
-      <div id="usbList" class="muted">Recherche des clés…</div>
-      <div class="row" style="margin-top:10px"><label class="check"><input type="checkbox" id="uExt" checked> Ajouter la suite (set étendu)</label>
-        <label class="check"><input type="checkbox" id="uFlac"> Convertir les FLAC en AIFF (anciens lecteurs : CDJ-2000NXS, CDJ-900NXS, XDJ-RX…)</label></div>
-      <div class="row" style="margin-top:10px"><button class="btn primary" id="uGo" disabled>Copier sur la clé</button><button class="btn" id="uRef">Actualiser</button><button class="btn" id="uEj" disabled>Éjecter</button></div>
-      <div id="uRes"></div></div>
-    <div class="panel"><h2>Clé USB complète via Rekordbox (grilles, hot cues, formes d'onde)</h2><ol class="steps">
-      <li>Importe le XML dans Rekordbox (étapes ci-dessous) et laisse Rekordbox analyser les morceaux.</li>
-      <li>Branche la clé : elle apparaît sous <b>Devices</b> dans la barre latérale de Rekordbox (mode Export).</li>
-      <li>Glisse la playlist importée sur la clé. Rekordbox copie les fichiers et sa base (dossier <code>PIONEER</code>) lisible par tous les CDJ / XDJ.</li></ol></div>
-    <div class="panel"><h2>Importer dans Rekordbox (Mac)</h2><ol class="steps">
-      <li>Le XML ne contient <b>ni hot cues, ni beatgrid</b> : Rekordbox refait toute l'analyse. BPM et clé mesurés sont dans le champ <i>Commentaires</i>.</li>
-      <li>Si ces morceaux sont déjà dans ta Collection avec une vieille analyse : sélectionne-les › clic droit › <b>Supprimer de la collection</b> (les fichiers restent sur le disque).</li>
-      <li>Rekordbox › Préférences › <b>Vue</b> › Mise en page : coche <b>rekordbox xml</b>.</li>
-      <li>Préférences › <b>Avancé</b> › Base de données › rekordbox xml › <b>Bibliothèque importée</b> › Parcourir : choisis le XML Mac dans <code>${esc(P.root)}/Export</code>.</li>
-      <li>Barre latérale › <b>rekordbox xml</b> › Playlists › <b>${esc(P.name)}</b> › clic droit sur chaque playlist › <b>Importer la playlist</b>.</li>
-      <li>Après un nouvel export : clique sur l'icône <b>Actualiser</b> à côté de « rekordbox xml », supprime l'ancienne playlist dans tes playlists, puis ré-importe. Si Rekordbox demande d'écraser les infos des morceaux, réponds <b>Non</b>.</li>
-      <li>Ne déplace pas le dossier <code>${esc(P.root)}</code> après l'import, sinon Rekordbox ne retrouve plus les fichiers.</li></ol></div>`;
+    ${P.set.length ? "" : `<div class="banner warn"><b>Pas encore de set.</b><span>L'export Rekordbox contiendra seulement la collection, et la clé USB a besoin d'un set.</span><span class="spacer"></span><button class="btn primary" id="xToSet">Créer le set →</button></div>`}
+    <div class="cols2">
+      <div class="panel"><h2>Rekordbox</h2>
+        <p class="hint">Un fichier XML que Rekordbox importe avec tes playlists. Sans hot cues ni beatgrid : Rekordbox refait l'analyse (BPM et clé mesurés sont dans les commentaires).</p>
+        <div class="params">
+          <label class="check"><input type="checkbox" id="xM" checked> XML pour ce Mac</label>
+          <label class="check"><input type="checkbox" id="xW"> XML pour Windows</label>
+          <label class="field" id="xWr" style="margin-left:24px">Dossier sur le PC (le projet « ${esc(P.name)} » sera dedans)<input type="text" id="xWroot" value="${esc(s.windows_root || "C:/DJ Music")}"></label>
+          <label class="check"><input type="checkbox" id="xU" checked> Playlists .m3u8</label>
+          <label class="check"><input type="checkbox" id="xH" checked> Tracklist imprimable</label>
+          <div><button class="btn primary" id="xGo">Exporter</button></div></div>
+        <div id="xRes"></div>
+        <details class="guide"><summary>Comment l'importer dans Rekordbox</summary><ol class="steps">
+          <li>Morceaux déjà dans ta Collection avec une vieille analyse : sélectionne-les › clic droit › <b>Supprimer de la collection</b> (les fichiers restent sur le disque).</li>
+          <li>Préférences › <b>Vue</b> › Mise en page : coche <b>rekordbox xml</b>.</li>
+          <li>Préférences › <b>Avancé</b> › Base de données › rekordbox xml › <b>Bibliothèque importée</b> : choisis le XML Mac dans <code>${esc(P.root)}/Export</code>.</li>
+          <li>Barre latérale › <b>rekordbox xml</b> › Playlists › <b>${esc(P.name)}</b> › clic droit sur chaque playlist › <b>Importer la playlist</b>.</li>
+          <li>Après un nouvel export : icône <b>Actualiser</b> à côté de « rekordbox xml », supprime l'ancienne playlist, ré-importe. Si Rekordbox demande d'écraser les infos des morceaux : <b>Non</b>.</li>
+          <li>Ne déplace pas le dossier <code>${esc(P.root)}</code> après l'import.</li></ol></details>
+        <details class="guide"><summary>Clé USB complète (grilles, hot cues, formes d'onde)</summary><ol class="steps">
+          <li>Importe le XML dans Rekordbox et laisse-le analyser les morceaux.</li>
+          <li>Branche la clé : elle apparaît sous <b>Devices</b> dans la barre latérale de Rekordbox.</li>
+          <li>Glisse la playlist sur la clé : Rekordbox copie les fichiers et sa base (dossier <code>PIONEER</code>).</li></ol></details></div>
+      <div class="panel"><h2>Clé USB directe (CDJ / XDJ)</h2>
+        <p class="hint">Sans passer par Rekordbox : un dossier par playlist, morceaux numérotés dans l'ordre. Sur le lecteur : <b>USB › FOLDER › SetBuilder</b>. Pas de beatgrid, hot cues ni forme d'onde pré-analysée. Clé en <b>FAT32</b> ou <b>exFAT</b>.</p>
+        <div id="usbList" class="muted">Recherche des clés…</div>
+        <div class="params" style="margin-top:10px"><label class="check"><input type="checkbox" id="uExt" checked> Ajouter la suite (set étendu)</label>
+          <label class="check"><input type="checkbox" id="uFlac"> FLAC → AIFF (anciens lecteurs : CDJ-2000NXS, CDJ-900NXS, XDJ-RX…)</label></div>
+        <div class="row" style="margin-top:10px"><button class="btn primary" id="uGo" disabled>Copier sur la clé</button><button class="btn" id="uRef">Actualiser</button><button class="btn" id="uEj" disabled>Éjecter</button></div>
+        <div id="uRes"></div></div>
+    </div>`;
+  if ($("#xToSet")) $("#xToSet").onclick = () => go("set");
   const sync = () => $("#xWr").style.display = $("#xW").checked ? "" : "none"; sync(); $("#xW").onchange = sync;
   const gb = b => `${(b / 1e9).toFixed(1)} Go`;
   const loadUsb = async () => {
@@ -516,7 +522,6 @@ function renderExport() {
         ${v.pioneer_ok ? "" : `<span class="chip bad">format non lu par les CDJ : reformate en FAT32 ou exFAT</span>`}${v.has_rekordbox ? `<span class="chip ok">contient déjà une clé Rekordbox (gardée)</span>` : ""}</label>`).join("")
       : "Aucune clé USB détectée. Branche-la puis clique sur « Actualiser ».";
     $("#uGo").disabled = $("#uEj").disabled = !volumes.length || !P.set.length;
-    if (!P.set.length) $("#usbList").insertAdjacentHTML("beforeend", `<div style="color:var(--warn);margin-top:6px">Génère d'abord un set.</div>`);
   };
   const vol = () => $("input[name=usbv]:checked")?.value;
   loadUsb(); $("#uRef").onclick = loadUsb;
@@ -536,13 +541,109 @@ function renderExport() {
   };
 }
 
+// ------------------------------------------------------------------ SoundCloud (tool)
+
+function renderSoundcloud() {
+  $("#title").textContent = "SoundCloud";
+  const P = S.proj;
+  $("#view").innerHTML = `
+    <div class="panel"><h2>Télécharger depuis SoundCloud</h2>
+      <p class="hint">Colle le lien d'un morceau, d'une playlist (set), d'un profil ou de ses likes (<code>…/likes</code>). L'app prend le fichier original quand l'artiste autorise le téléchargement, sinon la meilleure qualité d'écoute (souvent 128–160 kbps). Pochette et infos sont ajoutées, et les formats que Rekordbox ne lit pas sont convertis. Respecte les droits des artistes : privilégie les « free download ».</p>
+      <div class="row"><input type="text" id="scUrl" placeholder="https://soundcloud.com/…" style="flex:1;min-width:320px">
+        <button class="btn primary" id="scGo">Télécharger</button></div>
+      <div class="row" style="margin-top:12px">
+        <label class="check"><input type="radio" name="scDest" value="project" ${P ? "checked" : "disabled"}> Dans le projet ${P ? `« ${esc(P.name)} » (puis vérifier les noms et importer)` : "(choisis d'abord un projet)"}</label>
+        <label class="check"><input type="radio" name="scDest" value="folder" ${P ? "" : "checked"}> Dans un dossier : <code id="scFolder">${esc(S.scFolder || (S.state?.default_root || "~/Music") + "/SoundCloud")}</code></label>
+        <button class="btn small" id="scPick">Changer…</button></div>
+      <div id="scRes"></div></div>`;
+  $("#scPick").onclick = async () => { const [f] = await pickFolders(false); if (f) { S.scFolder = f; $("#scFolder").textContent = f; $("input[value=folder]").checked = true; } };
+  $("#scUrl").addEventListener("keydown", e => { if (e.key === "Enter") $("#scGo").click(); });
+  $("#scGo").onclick = async () => {
+    const url = $("#scUrl").value.trim(); if (!url) return toast("Colle un lien SoundCloud.");
+    const toProject = $("input[name=scDest]:checked").value === "project";
+    const body = toProject ? { root: P.root, url } : { url, dest: $("#scFolder").textContent };
+    const r = await job("/api/soundcloud", body, "Téléchargement SoundCloud");
+    if (!r.count) return toast(r.errors[0] || "Rien de nouveau à télécharger (déjà téléchargé ?).", !!r.errors.length);
+    if (toProject) {
+      const known = new Set((S.rows || []).map(x => x.src));
+      S.rows = (S.rows || []).concat(r.rows.filter(x => !known.has(x.src)));
+      toast(`${r.count} morceaux téléchargés : vérifie les noms puis importe.`);
+      go("import");
+    } else {
+      $("#scRes").innerHTML = `<div class="row" style="margin-top:14px"><span class="chip ok">${r.count} morceaux</span><button class="btn small" id="scShow">Afficher dans le Finder</button></div>
+        <div class="muted" style="margin-top:8px;font-size:12px">${r.files.map(f => esc(f.split("/").pop())).join("<br>")}</div>
+        ${r.errors.length ? `<div style="color:var(--warn);margin-top:8px;font-size:12px">${r.errors.length} non téléchargés : ${esc(r.errors[0])}</div>` : ""}`;
+      $("#scShow").onclick = () => api("/api/reveal", { path: r.files[0] });
+    }
+  };
+}
+
+// ------------------------------------------------------------------ Spotify (tool)
+
+async function renderSpotify() {
+  $("#title").textContent = "Spotify";
+  const P = S.proj, s = (S.state || await api("/api/state")).settings;
+  const st = await api("/api/spotify/status");
+  const hasSet = P && P.set.length;
+  $("#view").innerHTML = `
+    ${st.connected ? `<div class="banner"><span class="sp-ok">●</span><b>Connecté à Spotify : ${esc(st.name)}</b><span class="spacer"></span><button class="btn small" id="spOut">Déconnecter</button></div>`
+    : `<div class="panel"><h2>Connecter Spotify (une seule fois)</h2>
+      <p class="hint">Spotify demande une petite « app développeur » gratuite (2 min) :</p>
+      <ol class="steps"><li>Va sur <code>developer.spotify.com/dashboard</code>, connecte-toi, « Create app ».</li>
+        <li>Nom : SetBuilder. <b>Redirect URI</b> : <code id="spRU">${esc(st.redirect_uri)}</code> <button class="btn small" id="spCopy">Copier</button>. Coche « Web API », enregistre.</li>
+        <li>Copie le <b>Client ID</b> de l'app ici :</li></ol>
+      <div class="row"><input type="text" id="spId" value="${esc(s.spotify_client_id || "")}" placeholder="Client ID" style="width:340px">
+        <button class="btn primary" id="spIn">Connecter Spotify</button><button class="btn" id="spRef">Actualiser</button></div>
+      ${st.error ? `<div class="muted" style="margin-top:8px;color:var(--warn)">${esc(st.error)}</div>` : ""}</div>`}
+    <div class="panel"><h2>Ajouter des morceaux similaires</h2>
+      <p class="hint">Trouve des morceaux du même style et d'un tempo proche, à partir d'une de tes playlists Spotify ou du set de ton projet, et les ajoute sur ton Spotify. Les morceaux déjà présents sont ignorés.</p>
+      <div class="params" style="max-width:720px">
+        <div class="row">
+          <label class="check"><input type="radio" name="spFrom" value="pl" ${hasSet ? "" : "checked"}> Une playlist Spotify</label>
+          <label class="check"><input type="radio" name="spFrom" value="set" ${hasSet ? "checked" : "disabled"}> Le set ${P ? `« ${esc(P.name)} »` : ""} ${hasSet ? "" : "(aucun set généré)"}</label></div>
+        <div id="spPlBox" class="row">
+          <input type="text" id="spUrl" placeholder="https://open.spotify.com/playlist/…" style="flex:1;min-width:300px" value="${esc(S.spUrl || "")}">
+          <label class="field">Ajouter dans<select id="spTgt"><option value="same">Cette même playlist</option><option value="new">Une nouvelle playlist</option></select></label></div>
+        <div class="row">
+          <label class="field">Nombre<select id="spN"><option>10</option><option selected>20</option><option>40</option><option>60</option><option>100</option></select></label>
+          <label class="field">Source<select id="spSrc"><option value="auto">IA + Deezer</option><option value="ia">IA seulement</option><option value="deezer">Deezer seulement (sans IA)</option></select></label>
+          <label class="check" id="spSetL" style="margin-top:18px"><input type="checkbox" id="spSet"> Mettre aussi les morceaux du set</label>
+          <label class="check" style="margin-top:18px"><input type="checkbox" id="spPub"> Nouvelle playlist publique</label></div>
+        <div><button class="btn primary" id="spGo" ${st.connected ? "" : "disabled"}>Ajouter les morceaux</button></div></div>
+      <div id="spRes"></div></div>`;
+  const sync = () => {
+    const pl = $("input[name=spFrom]:checked").value === "pl";
+    $("#spPlBox").style.display = pl ? "" : "none";
+    $("#spSetL").style.display = pl ? "none" : "";
+  };
+  $$("input[name=spFrom]").forEach(r => r.onchange = sync); sync();
+  if ($("#spOut")) $("#spOut").onclick = async () => { await api("/api/spotify/logout", {}); renderSpotify(); };
+  if ($("#spCopy")) $("#spCopy").onclick = () => { navigator.clipboard?.writeText($("#spRU").textContent); toast("Redirect URI copiée."); };
+  if ($("#spRef")) $("#spRef").onclick = () => renderSpotify();
+  if ($("#spIn")) $("#spIn").onclick = async () => {
+    const id = $("#spId").value.trim(); if (!id) return toast("Colle le Client ID de ton app Spotify.", true);
+    S.state = await api("/api/settings", { spotify_client_id: id });
+    await api("/api/spotify/login", {});
+    toast("Autorise SetBuilder dans ton navigateur, puis clique sur « Actualiser ».");
+  };
+  $("#spGo").onclick = async () => {
+    const pl = $("input[name=spFrom]:checked").value === "pl", url = $("#spUrl").value.trim();
+    if (pl && !url) return toast("Colle le lien de ta playlist Spotify.", true);
+    S.spUrl = url;
+    const r = await job("/api/spotify/similar", { root: pl ? null : P.root, playlist: pl ? url : "", target: $("#spTgt").value,
+      count: +$("#spN").value, source: $("#spSrc").value, include_set: $("#spSet").checked, public: $("#spPub").checked }, "Spotify : morceaux similaires");
+    $("#spRes").innerHTML = `<div class="row" style="margin-top:14px"><span class="chip ok">${r.similar.length} morceaux ajoutés</span><button class="btn small" id="spOpen">Ouvrir dans Spotify</button></div>
+      <ol style="margin:10px 0 0;padding-left:20px;font-size:12.5px;color:var(--muted)">${r.similar.map(x => `<li>${esc(x)}</li>`).join("")}</ol>`;
+    $("#spOpen").onclick = () => api("/api/open", { path: r.url });
+  };
+}
+
 // ------------------------------------------------------------------ settings
 
 async function renderSettings() {
   $("#title").textContent = "Réglages";
   S.state = await api("/api/state");
   const s = S.state.settings, ai = S.state.ai;
-  const sp = await api("/api/spotify/status");
   const tool = (name, label, st, extra) => `
     <div class="panel"><h2>${label}</h2>${extra}
       <div class="row">${!st.installed ? `<span class="chip bad">non installé</span><button class="btn primary" data-act="install" data-n="${name}">Installer</button>`
@@ -570,16 +671,7 @@ async function renderSettings() {
       <div class="row"><input type="password" id="sKey" placeholder="${S.state.has_key ? "•••••••• clé enregistrée" : "sk-ant-…"}" style="width:340px">
       <button class="btn primary" id="sKS">Enregistrer</button><button class="btn" data-act="test" data-n="api" ${S.state.has_key ? "" : "disabled"}>Tester</button>
       <button class="btn" id="sKD" ${S.state.has_key ? "" : "disabled"}>Supprimer</button></div></div>
-    <div class="panel"><h2>Spotify</h2>
-      <p class="hint">Pour créer des playlists de morceaux similaires. Spotify demande une petite « app développeur » gratuite (une fois, 2 min) :</p>
-      <ol class="steps"><li>Va sur <code>developer.spotify.com/dashboard</code>, connecte-toi, « Create app ».</li>
-        <li>Nom : SetBuilder. <b>Redirect URI</b> : <code id="sRU">${esc(sp.redirect_uri)}</code> <button class="btn small" id="sCopy">Copier</button>. Coche « Web API », enregistre.</li>
-        <li>Copie le <b>Client ID</b> de l'app et colle-le ici, puis « Connecter Spotify ».</li></ol>
-      <div class="row"><input type="text" id="sSpId" value="${esc(s.spotify_client_id || "")}" placeholder="Client ID" style="width:340px">
-        <button class="btn" id="sSpSave">Enregistrer</button>
-        ${sp.connected ? `<span class="chip ok">connecté : ${esc(sp.name)}</span><button class="btn" id="sSpOut">Déconnecter</button>` : `<button class="btn primary" id="sSpIn" ${s.spotify_client_id ? "" : "disabled"}>Connecter Spotify</button>`}
-        <button class="btn sRef">Actualiser</button></div>
-      ${sp.error ? `<div class="muted" style="margin-top:8px;color:var(--warn)">${esc(sp.error)}</div>` : ""}</div>
+    <div class="panel"><h2>Spotify</h2><p class="hint" style="margin:0">La connexion Spotify se gère maintenant dans l'outil <a href="#" id="sGoSp">Spotify</a>.</p></div>
     <div class="panel"><h2>Priorités du set</h2>
       <p class="hint">Les artistes à mettre en avant se choisissent maintenant pour chaque set, dans l'écran « Set », parmi les artistes de tes morceaux.</p>
       <div class="params" style="max-width:420px"><label class="field">Bonus remix : <b id="rbV">${s.remix_bonus}</b><input type="range" id="sRB" min="0" max="3" step="0.25" value="${s.remix_bonus}"></label></div>
@@ -600,11 +692,8 @@ async function renderSettings() {
   $("#sCxM").onchange = e => api("/api/settings", { codex_model: e.target.value.trim() });
   $("#sKS").onclick = async () => { const key = $("#sKey").value.trim(); if (!key) return; await api("/api/key", { key }); toast("Clé enregistrée."); renderSettings(); };
   $("#sKD").onclick = async () => { await api("/api/key", { key: "" }); toast("Clé supprimée."); renderSettings(); };
-  $("#sCopy").onclick = () => { navigator.clipboard?.writeText($("#sRU").textContent); toast("Redirect URI copiée."); };
-  $("#sSpSave").onclick = async () => { await api("/api/settings", { spotify_client_id: $("#sSpId").value.trim() }); toast("Client ID enregistré."); renderSettings(); };
-  if ($("#sSpIn")) $("#sSpIn").onclick = async () => { await api("/api/spotify/login", {}); toast("Autorise SetBuilder dans ton navigateur, puis clique sur « Actualiser »."); };
-  if ($("#sSpOut")) $("#sSpOut").onclick = async () => { await api("/api/spotify/logout", {}); renderSettings(); };
   $("#sRB").oninput = e => $("#rbV").textContent = e.target.value;
+  $("#sGoSp").onclick = e => { e.preventDefault(); go("spotify"); };
   $("#sSave").onclick = async () => {
     S.state = await api("/api/settings", { remix_bonus: +$("#sRB").value });
     if (S.proj) await loadProject(S.proj.root);

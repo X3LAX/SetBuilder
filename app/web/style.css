@@ -121,7 +121,9 @@ code { background: var(--panel2); padding: 1px 6px; border-radius: 4px; }
 #modal h2 { margin: 0 0 12px; font-size: 16px; }
 .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
 .empty b { display: block; color: var(--text); font-size: 15px; margin-bottom: 6px; }
-.params input, .params select { width: 100%; min-width: 0; }
+.params input[type=text], .params input[type=number], .params input[type=range], .params select { width: 100%; min-width: 0; }
+.params .row input[type=text] { width: auto; }
+.params .row .field select { width: auto; }
 .params .two > * { min-width: 0; }
 @media (max-width: 1150px) {
   .grid2 { grid-template-columns: 1fr; }
@@ -139,3 +141,28 @@ code { background: var(--panel2); padding: 1px 6px; border-radius: 4px; }
 .achip { border: 1px solid var(--line); cursor: pointer; font-size: 12px; padding: 3px 9px; }
 .achip:hover { border-color: var(--accent); color: var(--text); }
 .achip span { color: var(--muted); margin-left: 3px; }
+
+nav a .badge { margin-left: auto; font-style: normal; font-size: 11px; color: var(--muted); }
+nav a .badge.todo { color: var(--warn); }
+nav a .badge.done { color: var(--ok); }
+nav a b.tool { background: var(--panel2); font-size: 12px; }
+nav a b.sc { color: #ff7a1a; } nav a b.sp { color: #1ed760; }
+nav a.on b.tool { background: var(--panel2); }
+.banner { display: flex; align-items: center; gap: 12px; background: #1d2433; border: 1px solid #2c3a55; border-radius: 10px;
+  padding: 11px 14px; margin-bottom: 16px; }
+.banner.warn { background: #2a2416; border-color: #4a3c1a; }
+.banner .spacer { flex: 1; }
+.drop { border: 2px dashed var(--line); border-radius: 12px; padding: 26px; text-align: center; color: var(--muted); margin-top: 12px; }
+.drop.on { border-color: var(--accent); color: var(--text); background: #1a1410; }
+.cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 1150px) { .cols2 { grid-template-columns: 1fr; } }
+details.guide { margin-top: 12px; }
+details.guide summary { cursor: pointer; color: var(--muted); }
+details.guide[open] summary { margin-bottom: 10px; }
+details.fold > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary h2 { margin: 0; }
+details.fold > summary::after { content: "▾"; color: var(--muted); margin-left: auto; }
+details.fold:not([open]) > summary::after { content: "▸"; }
+details.fold[open] > summary { margin-bottom: 12px; }
+.sp-ok { color: #1ed760; }

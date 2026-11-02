@@ -53,6 +53,24 @@ class Api:
         return r[0] if r else None
 
 
+def bind_drop(window):
+    """Forward the real paths of files dropped on the window to the page (window.onNativeDrop)."""
+    import json
+    try:
+        from webview.dom import DOMEventHandler
+    except ImportError:
+        return
+
+    def on_drop(e):
+        files = (e.get("dataTransfer") or {}).get("files") or []
+        paths = [f.get("pywebviewFullPath") for f in files if f.get("pywebviewFullPath")]
+        if paths:
+            window.evaluate_js(f"window.onNativeDrop && window.onNativeDrop({json.dumps(paths)})")
+
+    window.dom.document.events.dragover += DOMEventHandler(lambda e: None, True, True)
+    window.dom.document.events.drop += DOMEventHandler(on_drop, True, True)
+
+
 def serve(port):
     import uvicorn
     from setbuilder.server import PORT, app
@@ -84,7 +102,7 @@ def main():
     api = Api()
     api.window = webview.create_window("SetBuilder", f"http://127.0.0.1:{port}/", js_api=api,
                                        width=1440, height=920, min_size=(1000, 680), background_color="#0e0f13")
-    webview.start()
+    webview.start(bind_drop, api.window)
 
 
 if __name__ == "__main__":
