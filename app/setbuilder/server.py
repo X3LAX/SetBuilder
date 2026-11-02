@@ -192,8 +192,11 @@ def _terminal(command):
 
 
 AI_TOOLS = {
-    "claude": {"install": "brew install --cask claude-code", "login": "{exe} auth login --claudeai"},
-    "codex": {"install": "brew install --cask codex", "login": "{exe} login"},
+    "claude": {"install": "brew install --cask claude-code" if OS_NAME == "mac"
+               else 'powershell -NoProfile -Command "irm https://claude.ai/install.ps1 | iex"',
+               "login": "{exe} auth login --claudeai"},
+    "codex": {"install": "brew install --cask codex" if OS_NAME == "mac" else "npm install -g @openai/codex",
+              "login": "{exe} login"},
 }
 
 
