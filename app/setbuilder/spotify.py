@@ -94,16 +94,41 @@ def _access_token():
     return tok["access_token"]
 
 
+_BLOCKED_UNTIL = 0.0
+
+
 def _call(method, path, wait=True, **kw):
+    # Spotify answers 429 when the app asked too much; a long Retry-After (hours) means the app is
+    # blocked for a while: say until when instead of retrying
+    if time.time() < _BLOCKED_UNTIL:
+        raise RateLimited(_blocked_msg())
     for attempt in range(4):
         r = httpx.request(method, API + path, headers={"Authorization": f"Bearer {_access_token()}"}, timeout=20, **kw)
-        if r.status_code == 429:  # rate limited
+        if r.status_code == 429:
+            delay = int(r.headers.get("Retry-After", "2") or 2)
+            if delay > 60:
+                _block(delay)
+                raise RateLimited(_blocked_msg())
             if not wait:
                 raise RateLimited("Spotify : trop de requêtes")
-            time.sleep(min(10, int(r.headers.get("Retry-After", "2"))))
+            time.sleep(min(10, delay))
             continue
         return r
     return r
+
+
+def _block(delay):
+    global _BLOCKED_UNTIL
+    _BLOCKED_UNTIL = time.time() + delay
+
+
+def _blocked_msg():
+    return (f"Spotify a mis l'app en pause (trop de requêtes) jusqu'à "
+            f"{time.strftime('%Hh%M', time.localtime(_BLOCKED_UNTIL))}. Réessaie après.")
+
+
+def blocked_until():
+    return _BLOCKED_UNTIL if time.time() < _BLOCKED_UNTIL else 0
 
 
 def me():
@@ -214,79 +239,6 @@ def find_track(artist, title, prefer_extended=False, allow_other_remix=True):
     it, kind = best
     return {"uri": it["uri"], "name": it["name"], "artists": ", ".join(a["name"] for a in it["artists"]),
             "url": it["external_urls"].get("spotify", ""), "match": kind}
-
-
-CACHE_FILE = SUPPORT / "spotify-cache.json"
-CACHE_DAYS = 30
-_cache, _cache_lock = None, threading.Lock()
-
-
-def _cache_key(artist, title):
-    return f"{_n(artist)}|{_n(title)}"
-
-
-def cache_get(artist, title):
-    """True / False if checked in the last 30 days, else None."""
-    global _cache
-    with _cache_lock:
-        if _cache is None:
-            try:
-                _cache = json.loads(CACHE_FILE.read_text())
-            except (OSError, ValueError):
-                _cache = {}
-        v = _cache.get(_cache_key(artist, title))
-    return v[0] if v and time.time() - v[1] < CACHE_DAYS * 86400 else None
-
-
-def cache_put(artist, title, official):
-    with _cache_lock:
-        if _cache is None:
-            return
-        _cache[_cache_key(artist, title)] = [bool(official), int(time.time())]
-
-
-def cache_save():
-    with _cache_lock:
-        if _cache is None:
-            return
-        old = time.time() - CACHE_DAYS * 86400
-        for k in [k for k, v in _cache.items() if v[1] < old]:
-            del _cache[k]
-        try:
-            tmp = CACHE_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(_cache))
-            tmp.replace(CACHE_FILE)
-        except OSError:
-            pass
-
-
-def quick_official(artist, title):
-    """One search request: True when this exact version (same remix) is on Spotify, False when not, None if unknown.
-    Raises RateLimited instead of waiting."""
-    from .library import is_remix
-    main = re.split(r",|&| x | feat\.?| ft\.?", artist, flags=re.I)[0].strip()
-    base = re.sub(r"[\(\[].*?[\)\]]", "", title).strip()
-    version = " ".join(v for v in re.findall(r"[\(\[](.*?)[\)\]]", title) if not re.match(r"(feat|ft)\b", v, re.I))
-    wanted, wants_remix = _version_tokens(version), is_remix(title)
-    r = _call("GET", "/search", wait=False, params={"q": f"track:{base} artist:{main} {version}".strip(), "type": "track", "limit": 10})
-    if r.status_code != 200:
-        return None
-    for it in r.json().get("tracks", {}).get("items", []):
-        names = _n(" ".join(a["name"] for a in it["artists"]))
-        name_b = _as_brackets(it["name"])
-        if not _artist_ok(main, names) or (core_title(base) not in core_title(name_b) and core_title(name_b) not in core_title(base)):
-            continue
-        name_n = _n(name_b)
-        cand = _version_tokens(" ".join(v for v in re.findall(r"[\(\[](.*?)[\)\]]", name_b) if not re.match(r"(feat|ft|with)\b", v, re.I)))
-        if wanted:
-            ok = wanted <= set(name_n.split()) | set(names.split())
-        elif wants_remix:
-            ok = is_remix(name_b)
-        else:
-            ok = not (cand or (is_remix(name_b) and not wants_remix))
-        if ok:
-            return True
-    return False
 
 
 def playlist_id(url_or_id):

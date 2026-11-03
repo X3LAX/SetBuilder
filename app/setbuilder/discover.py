@@ -13,14 +13,14 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
-from . import ai, library, spotify
+from . import ai, deezer, library
 from .config import which
 
 MIN_SEC, MAX_SEC = 120, 540
 MAX_CANDIDATES = 150
 WORKERS = 16
 KINDS_WANTED = {"remix", "edit", "bootleg", "flip", "mashup"}
-SPOTIFY_BUDGET = 15   # seconds for the whole Spotify check
+OFFICIAL_BUDGET = 15   # seconds for the whole Deezer check
 PREVIEW_WORDS = r"\b(preview|snippet|teaser|sample|clip|promo|short version)\b"
 MIX_WORDS = r"\b(dj set|live set|podcast|mixtape|warm.?up|radio show|b2b|mix ?\d+|vol\.? ?\d+|episode|session)\b"
 PLAIN_EDIT = r"\b(radio|clean|extended|original|club|dirty|intro|short)\s+edit\b"
@@ -278,54 +278,28 @@ def apply_filters(cands, f, ai_ok, now_year=None):
     return out, skipped
 
 
-def spotify_check(cands, budget=SPOTIFY_BUDGET, progress=lambda i, n, m: None):
-    """Sets c['on_spotify'] with one search per track (cached 30 days), 4 workers. Stops at the first rate limit or
-    after `budget` seconds; unchecked ones stay False (shown). Returns the number answered."""
-    deadline, stop, answered = time.time() + budget, threading.Event(), [0]
-    todo = []
-    for c in cands:
-        artist, song = parse_title(c["title"], c["uploader"])
-        hit = spotify.cache_get(artist, song)
-        if hit is None:
-            todo.append((c, artist, song))
-        else:
-            c["on_spotify"] = hit
-            answered[0] += 1
+def official_check(cands, budget=OFFICIAL_BUDGET, progress=lambda i, n, m: None, search=None):
+    """Sets c['official'] / c['on_spotify'] (kept for the UI) from one Deezer search per track (cached 30 days).
+    Unanswered ones stay False (shown). Returns the number answered."""
+    pairs = [parse_title(c["title"], c["uploader"]) for c in cands]
+    res, n = deezer.check_many(pairs, budget, progress=progress, search=search)
+    for i, v in res.items():
+        cands[i]["official"] = cands[i]["on_spotify"] = v
+    return n
 
-    def check(item):
-        c, artist, song = item
-        if stop.is_set() or time.time() > deadline:
-            return
-        try:
-            res = spotify.quick_official(artist, song)
-        except spotify.RateLimited:
-            stop.set()
-            return
-        except Exception:  # noqa: BLE001 - unknown stays shown
-            return
-        if res is not None:
-            c["on_spotify"] = res
-            spotify.cache_put(artist, song, res)
-            answered[0] += 1
-    ex = ThreadPoolExecutor(4)
-    futs = [ex.submit(check, it) for it in todo]
-    try:
-        for n in range(len(futs)):
-            left = deadline - time.time()
-            if left <= 0:
-                break
-            wait(futs[:n + 1], timeout=left)
-            progress(n, len(futs), "Spotify : vérification…")
-    finally:
-        stop.set()
-        ex.shutdown(wait=False, cancel_futures=True)
-    spotify.cache_save()
-    return answered[0]
+
+def split_official(cands, count, hide_official, show_official):
+    """(unofficial list, official list), each sorted by score and cut to `count`. Official ones are only returned
+    when show_official; otherwise they are dropped (hide_official) or kept at the end of the main list."""
+    off = [c for c in cands if c["official"]] if show_official else []
+    main = [c for c in cands if not (c["official"] and (hide_official or show_official))]
+    main.sort(key=lambda c: c["official"])   # stable: official ones last
+    return main[:count], off[:count]
 
 
 # ------------------------------------------------------------ main
 
-def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, progress=lambda i, n, m: None, filters=None):
+def discover(seeds, project=None, count=40, hide_official=True, use_ai=True, progress=lambda i, n, m: None, filters=None, search=None, show_official=False):
     t0 = time.time()
     filters = norm_filters(filters)
     progress(0, 1, "Lecture des morceaux de départ…")
@@ -412,7 +386,7 @@ def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, prog
         c["orig_year"], c["orig_pop"] = (v.get("orig_year") or None, v.get("orig_pop")) if v else (None, None)
         c["trend"] = trend_score(c["plays"], c["likes"], c["reposts"], c["age_days"])
         c["score"] = final_score(c["trend"], c["fit"])
-        c["on_spotify"] = False
+        c["official"] = c["on_spotify"] = False
         kept.append(c)
     kept.sort(key=lambda c: c["score"], reverse=True)
     if ai_ok:   # unclassified leftovers were not seen by the AI: keep them but behind
@@ -420,33 +394,29 @@ def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, prog
 
     kept, skipped = apply_filters(kept, filters, ai_ok)
 
-    # Spotify: an exact match means the remix is official (one cached search per track, short budget)
-    try:
-        spotify_on = spotify.status().get("connected")
-    except Exception:  # noqa: BLE001
-        spotify_on = False
-    checked = 0
-    if spotify_on:
-        checked = spotify_check(kept[:max(count, 30)], progress=progress)
-        kept = [c for c in kept if not (c["on_spotify"] and hide_spotify)]
-        kept.sort(key=lambda c: c["on_spotify"])   # stable: official ones last
+    # Deezer: an exact match means the remix is official (one cached search per track, short budget)
+    checked = official_check(kept[:max(2 * count if show_official else count, 30)], progress=progress, search=search)
+    kept, off = split_official(kept, count, hide_official, show_official)
 
-    kept = kept[:count]
-    need = [c for c in kept if not c["_full"]]   # free download needs the formats list
+    need = [c for c in kept + off if not c["_full"]]   # free download needs the formats list
     with ThreadPoolExecutor(WORKERS) as ex:
         for n, (c, full) in enumerate(zip(need, ex.map(lambda c: _full(c["url"], c["src"]), need))):
             progress(n, len(need), "SoundCloud : téléchargements gratuits…")
             c["free_download"] = bool(full and full["free_download"])
-    results = []
-    for c in kept:
-        c["badges"] = make_badges(c)
-        results.append({k: c[k] for k in ("url", "title", "duration", "plays", "likes", "reposts", "age_days", "trend",
-                                          "fit", "score", "kind", "reason", "on_spotify", "free_download", "genre", "orig_year", "orig_pop")}
+
+    def rows(lst):
+        out = []
+        for c in lst:
+            c["badges"] = make_badges(c)
+            out.append({k: c[k] for k in ("url", "title", "duration", "plays", "likes", "reposts", "age_days", "trend",
+                                          "fit", "score", "kind", "reason", "official", "on_spotify", "free_download", "genre", "orig_year", "orig_pop")}
                        | {"artist": c["uploader"], "cover": c["cover"], "badges": c["badges"]})
+        return out
+    results, official_results = rows(kept), rows(off)
     progress(1, 1, f"{len(results)} résultats en {time.time() - t0:.0f} s")
-    return {"results": results, "queries": queries,
+    return {"results": results, "official_results": official_results, "queries": queries,
             "stats": {"candidates": n_cands, "kept": len(results), "ai": ai_ok, "filters_skipped": skipped,
-                      "spotify_checked": checked}}
+                      "official_checked": checked, "official_source": "Deezer"}}
 
 
 # ------------------------------------------------------------ preview

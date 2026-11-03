@@ -162,46 +162,68 @@ def test_discover_filters_and_mashup():
     assert "2000s remix" in d.det_queries([{"title": "Tusa", "artist": "Karol G"}], {"era": "2000s"})
 
 
-def test_spotify_quick_official_and_cache(tmp_path=None):
-    import tempfile
-    from setbuilder import discover as d, spotify
-    spotify.CACHE_FILE = Path(tempfile.mkdtemp()) / "spotify-cache.json"
-    spotify._cache = None
-
+def test_deezer_official_and_cache():
+    import tempfile, time
+    from setbuilder import discover as d, deezer
+    deezer.CACHE_FILE = Path(tempfile.mkdtemp()) / "official-cache.json"
+    deezer._cache = None
+    it = lambda title, art: {"title": title, "artist": {"name": art}}
+    items = [it("Tusa (Foo Remix)", "Karol G"), it("Tusa", "Karol G")]
+    ok = lambda a, t, rows=items: deezer.official(a, t, search=lambda q: rows)
+    assert ok("Karol G", "Tusa (Foo Remix)") is True
+    assert ok("Karol G", "Tusa (Bar Remix)") is False   # another remix is not the same version
+    assert ok("Karol G", "Tusa") is True
+    assert ok("Karol G", "Tusa (Foo Remix)", [it("Tusa - Foo Remix", "Someone Else")]) is False
+    assert ok("Karol G", "Tusa (Foo Remix)", []) is False
+    assert deezer.official("Karol G", "Tusa", search=lambda q: None) is None
+    # request shape + error handling
     class R:
-        status_code = 200
-        def __init__(self, items): self.items = items
-        def json(self): return {"tracks": {"items": self.items}}
-    it = lambda name, art: {"name": name, "artists": [{"name": art}], "uri": name}
-    calls = []
-    def fake(method, path, wait=True, **kw):
-        calls.append(kw["params"]["q"])
-        return R([it("Tusa - Foo Remix", "Karol G"), it("Tusa", "Karol G")])
-    spotify._call = fake
-    assert spotify.quick_official("Karol G", "Tusa (Foo Remix)") is True
-    assert spotify.quick_official("Karol G", "Tusa (Bar Remix)") is False   # another remix is not the same version
-    assert spotify.quick_official("Karol G", "Tusa") is True and len(calls) == 3
-    spotify._call = lambda *a, **k: R([it("Tusa - Foo Remix", "Someone Else")])
-    assert spotify.quick_official("Karol G", "Tusa (Foo Remix)") is False
+        def __init__(self, code, js): self.status_code, self.js = code, js
+        def json(self): return self.js
+    class C:
+        def __init__(self, r): self.r, self.params = r, []
+        def get(self, url, params): self.params.append(params); return self.r
+    c = C(R(200, {"data": items}))
+    assert deezer.official("Karol G", "Tusa (Foo Remix)", c) is True and c.params[0]["q"] == "Karol G Tusa"
+    for bad in (R(429, {}), R(200, {"error": {"code": 4, "message": "Quota limit exceeded"}})):
+        try:
+            deezer.official("a", "b", C(bad)); assert False
+        except deezer.Quota:
+            pass
+    assert deezer.official("a", "b", C(R(200, {"error": {"code": 800}}))) is None
     # cache
-    spotify.cache_get("a", "b")
-    spotify.cache_put("A", "b", True)
-    spotify.cache_save()
-    spotify._cache = None
-    assert spotify.cache_get("a", "B") is True and spotify.cache_get("a", "c") is None
-    spotify._cache["a|old"] = [True, 0]
-    assert spotify.cache_get("a", "old") is None
-    # rate limit stops the loop: later tracks stay unchecked and nothing sleeps
+    deezer.cache_get("a", "b")
+    deezer.cache_put("A", "b", True)
+    deezer.cache_save()
+    deezer._cache = None
+    assert deezer.cache_get("a", "B") is True and deezer.cache_get("a", "c") is None
+    deezer._cache["a|old"] = [True, 0]
+    assert deezer.cache_get("a", "old") is None
+    # quota: one short back-off, then the rest stays unknown
     seen = []
-    def limited(artist, title):
-        seen.append(title)
-        raise spotify.RateLimited("429")
-    spotify.quick_official = limited
+    def limited(q):
+        seen.append(q)
+        raise deezer.Quota()
     cands = [{"title": f"X - Song{i} (Z Remix)", "uploader": "x", "on_spotify": False} for i in range(40)]
-    import time
     t0 = time.time()
-    d.spotify_check(cands, budget=5)
-    assert len(seen) <= 4 and not any(c["on_spotify"] for c in cands) and time.time() - t0 < 3
+    assert d.official_check(cands, budget=5, search=limited) == 0
+    assert len(seen) <= 10 and not any(c["on_spotify"] for c in cands) and time.time() - t0 < 3
+    # answers set both keys
+    cands = [{"title": "X - Song1 (Z Remix)", "uploader": "x"}, {"title": "X - Song2 (Z Remix)", "uploader": "x"}]
+    rows = lambda q: [it("Song1 (Z Remix)", "X")] if "Song1" in q else []
+    assert d.official_check(cands, budget=5, search=rows) == 2
+    assert cands[0]["official"] is True and cands[0]["on_spotify"] is True and cands[1]["official"] is False
+    # split: official remixes go to their own list, filtered candidates only, both sorted by score
+    pool = [{"title": f"X - Song{i} (Z Remix)", "uploader": "x", "score": 100 - i} for i in range(6)]
+    got = {"Song1", "Song3", "Song4"}
+    d.official_check(pool, budget=5, search=lambda q: [it(f"{n} (Z Remix)", "X") for n in got if n in q])
+    main, off = d.split_official(pool, 2, True, True)
+    assert [c["score"] for c in main] == [100, 98] and [c["score"] for c in off] == [99, 97]
+    assert all(c["official"] for c in off) and not any(c["official"] for c in main)
+    main, off = d.split_official(pool, 10, True, False)
+    assert len(main) == 3 and off == []
+    main, off = d.split_official(pool, 10, False, False)
+    assert len(main) == 6 and main[-1]["official"] and off == []
 
 
 if __name__ == "__main__":

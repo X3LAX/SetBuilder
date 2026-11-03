@@ -242,7 +242,7 @@ def update_settings(body: dict):
     s = load_settings()
     for k in ("remix_bonus", "windows_root", "fetch_covers", "use_ai", "ai_provider",
               "codex_model", "spotify_client_id", "ai_level_names", "ai_level_similar",
-              "ai_level_discover", "ai_level_discover_sort"):
+              "ai_level_discover", "ai_level_discover_sort", "discover_presets"):
         if k in body:
             s[k] = body[k]
     save_settings(s)
@@ -666,8 +666,8 @@ def discover_run(body: dict):
         raise HTTPException(400, "Choisis au moins un morceau de départ.")
     use_ai = ai.status()["ok"]
     return start_job(lambda progress: discover.discover(
-        seeds, p, int(body.get("count", 40)), body.get("hide_spotify", True), use_ai, progress,
-        body.get("filters") or {}))
+        seeds, p, int(body.get("count", 40)), body.get("hide_official", body.get("hide_spotify", True)), use_ai, progress,
+        body.get("filters") or {}, show_official=bool(body.get("show_official", False))))
 
 
 @app.post("/api/discover/ignore")
