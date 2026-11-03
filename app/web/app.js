@@ -19,7 +19,7 @@ async function api(path, body) {
 }
 
 let jobBusy = false;
-async function job(path, body, label) {
+async function job(path, body, label, onp) {
   if (jobBusy) { toast("Une tâche est déjà en cours, attends qu'elle finisse."); throw new Error("busy"); }
   jobBusy = true;
   const box = $("#job"); box.hidden = false;
@@ -37,6 +37,7 @@ async function job(path, body, label) {
       const now = (Date.now() - t0) / 1000, st = j.steps || [];
       $(".jsteps", box).textContent = st.length > 1 || now > 5 ? st.map((s, i) =>
         `${s.name} ${Math.round((i + 1 < st.length ? st[i + 1].start : now) - s.start)} s`).join("  ·  ") + `  —  ${Math.round(now)} s au total` : "";
+      if (onp) onp(j);
       if (j.state === "done") return j.result;
       if (j.state === "cancelled") { toast("Arrêté."); throw new Error("cancelled"); }
       if (j.state === "error") { toast(j.error, true); throw new Error(j.error); }
@@ -612,39 +613,83 @@ function renderExport() {
 
 // ------------------------------------------------------------------ SoundCloud (tool)
 
+async function scRun() {
+  if (S.scRun) return;
+  S.scRun = true; S.scPause = false;
+  try {
+    for (;;) {
+      const it = S.scQ.find(x => x.st === "wait"); if (!it || S.scPause) break;
+      while (jobBusy) await new Promise(r => setTimeout(r, 500));
+      it.st = "run"; it.pct = 0; it.msg = ""; scDraw();
+      try {
+        const r = await job("/api/soundcloud", it.root ? { root: it.root, url: it.url } : { url: it.url, dest: it.dest }, "Téléchargement SoundCloud",
+          j => { it.pct = j.total ? Math.round(100 * j.done / j.total) : 0; it.msg = j.message || ""; scDraw(); });
+        it.count = r.count; it.files = r.files;
+        if (!r.count) { it.st = "err"; it.msg = r.errors[0] || "Rien de nouveau (déjà téléchargé ?)"; }
+        else {
+          it.st = "ok"; it.msg = r.errors.length ? `${r.errors.length} non téléchargés` : "";
+          if (it.root) {
+            const known = new Set((S.rows || []).map(x => x.src));
+            S.rows = (S.rows || []).concat(r.rows.filter(x => !known.has(x.src)));
+            if (S.view === "import") renderImport();
+          }
+        }
+      } catch (e) {
+        it.st = "err"; it.msg = e.message === "cancelled" ? "arrêté" : e.message;
+        if (e.message === "cancelled") S.scPause = true;
+      }
+      scDraw();
+    }
+  } finally {
+    S.scRun = false; scDraw();
+    if (!S.scQ.some(x => x.st === "wait" || x.st === "run")) {
+      const n = S.scQ.filter(x => x.st === "ok" && x.root && !x.seen).length;
+      S.scQ.forEach(x => x.seen = true);
+      if (n) toast(`${n} téléchargement${n > 1 ? "s" : ""} terminé${n > 1 ? "s" : ""} : vérifie les noms puis importe.`);
+    }
+  }
+}
+function scDraw() {
+  const box = $("#scQ"); if (!box || S.view !== "soundcloud") return;
+  const Q = S.scQ, ST = { wait: "en attente", run: "téléchargement…", ok: "terminé", err: "erreur" };
+  box.innerHTML = Q.length ? `<div class="row" style="margin:14px 0 6px"><b>File d'attente</b><span class="spacer"></span>
+      ${S.scPause && Q.some(x => x.st === "wait") ? `<button class="btn small primary" id="scResume">Reprendre</button>` : ""}
+      <button class="btn small" id="scClr" ${Q.some(x => x.st === "ok" || x.st === "err") ? "" : "disabled"}>Vider les terminés</button></div>` +
+    Q.map((x, i) => `<div class="row" style="gap:10px;padding:4px 0;border-top:1px solid var(--line)">
+      <span class="chip ${x.st === "ok" ? "ok" : x.st === "err" ? "bad" : ""}" style="min-width:96px">${x.st === "ok" ? `terminé (${x.count} morceau${x.count > 1 ? "x" : ""})` : x.st === "run" ? `téléchargement… ${x.pct || 0} %` : ST[x.st]}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.url)}">${esc(x.url.replace(/^https?:\/\/(www\.|m\.)?soundcloud\.com\//i, ""))}${x.st === "err" || x.st === "ok" && x.msg ? ` <span class="muted">· ${esc(x.msg)}</span>` : ""}</span>
+      ${x.st === "ok" && !x.root && x.files?.length ? `<button class="btn small" data-show="${i}">Afficher</button>` : ""}
+      ${x.st === "wait" ? `<button class="icon" data-rm="${i}" title="Retirer">✕</button>` : ""}</div>`).join("") : "";
+  $$("[data-rm]", box).forEach(b => b.onclick = () => { S.scQ.splice(+b.dataset.rm, 1); scDraw(); });
+  $$("[data-show]", box).forEach(b => b.onclick = () => api("/api/reveal", { path: S.scQ[+b.dataset.show].files[0] }));
+  const c = $("#scClr", box); if (c) c.onclick = () => { S.scQ = S.scQ.filter(x => x.st === "wait" || x.st === "run"); scDraw(); };
+  const r = $("#scResume", box); if (r) r.onclick = scRun;
+}
+
 function renderSoundcloud() {
   $("#title").textContent = "SoundCloud";
-  const P = S.proj;
+  const P = S.proj; S.scQ = S.scQ || [];
   $("#view").innerHTML = `
     <div class="panel"><h2>Télécharger depuis SoundCloud</h2>
-      <p class="hint">Colle le lien d'un morceau, d'une playlist (set), d'un profil ou de ses likes (<code>…/likes</code>). L'app prend le fichier original quand l'artiste autorise le téléchargement, sinon la meilleure qualité d'écoute (souvent 128–160 kbps). Pochette et infos sont ajoutées, et les formats que Rekordbox ne lit pas sont convertis.</p>
-      <div class="row"><input type="text" id="scUrl" placeholder="https://soundcloud.com/…" style="flex:1;min-width:320px">
-        <button class="btn primary" id="scGo">Télécharger</button></div>
+      <p class="hint">Colle un ou plusieurs liens (un par ligne) : morceau, playlist (set), profil ou likes (<code>…/likes</code>). L'app prend le fichier original quand l'artiste autorise le téléchargement, sinon la meilleure qualité d'écoute (souvent 128–160 kbps). Pochette et infos sont ajoutées, et les formats que Rekordbox ne lit pas sont convertis. Les liens sont téléchargés l'un après l'autre.</p>
+      <div class="row" style="align-items:flex-start"><textarea id="scUrl" rows="3" placeholder="https://soundcloud.com/…" style="flex:1;min-width:320px"></textarea>
+        <button class="btn primary" id="scGo">Ajouter à la file</button></div>
       <div class="row" style="margin-top:12px">
         <label class="check"><input type="radio" name="scDest" value="project" ${P ? "checked" : "disabled"}> Dans le projet ${P ? `« ${esc(P.name)} » (puis vérifier les noms et importer)` : "(choisis d'abord un projet)"}</label>
         <label class="check"><input type="radio" name="scDest" value="folder" ${P ? "" : "checked"}> Dans un dossier : <code id="scFolder">${esc(S.scFolder || (S.state?.default_root || "~/Music") + "/SoundCloud")}</code></label>
         <button class="btn small" id="scPick">Changer…</button></div>
-      <div id="scRes"></div></div>`;
+      <div id="scQ"></div></div>`;
   $("#scPick").onclick = async () => { const [f] = await pickFolders(false); if (f) { S.scFolder = f; $("#scFolder").textContent = f; $("input[value=folder]").checked = true; } };
-  $("#scUrl").addEventListener("keydown", e => { if (e.key === "Enter") $("#scGo").click(); });
-  $("#scGo").onclick = async () => {
-    const url = $("#scUrl").value.trim(); if (!url) return toast("Colle un lien SoundCloud.");
-    const toProject = $("input[name=scDest]:checked").value === "project";
-    const body = toProject ? { root: P.root, url } : { url, dest: $("#scFolder").textContent };
-    const r = await job("/api/soundcloud", body, "Téléchargement SoundCloud");
-    if (!r.count) return toast(r.errors[0] || "Rien de nouveau à télécharger (déjà téléchargé ?).", !!r.errors.length);
-    if (toProject) {
-      const known = new Set((S.rows || []).map(x => x.src));
-      S.rows = (S.rows || []).concat(r.rows.filter(x => !known.has(x.src)));
-      toast(`${r.count} morceaux téléchargés : vérifie les noms puis importe.`);
-      go("import");
-    } else {
-      $("#scRes").innerHTML = `<div class="row" style="margin-top:14px"><span class="chip ok">${r.count} morceaux</span><button class="btn small" id="scShow">Afficher dans ${FM()}</button></div>
-        <div class="muted" style="margin-top:8px;font-size:12px">${r.files.map(f => esc(f.split("/").pop())).join("<br>")}</div>
-        ${r.errors.length ? `<div style="color:var(--warn);margin-top:8px;font-size:12px">${r.errors.length} non téléchargés : ${esc(r.errors[0])}</div>` : ""}`;
-      $("#scShow").onclick = () => api("/api/reveal", { path: r.files[0] });
-    }
+  $("#scGo").onclick = () => {
+    const urls = ($("#scUrl").value.match(/https?:\/\/[^\s,;]+/g) || []).filter((u, i, a) => a.indexOf(u) === i);
+    if (!urls.length) return toast("Colle un lien SoundCloud.");
+    const bad = urls.filter(u => !/^https?:\/\/([\w-]+\.)?soundcloud\.com\//i.test(u) && !/^https?:\/\/on\.soundcloud\.com\//i.test(u));
+    if (bad.length) return toast(`Lien non SoundCloud : ${bad[0]}`, true);
+    const toProject = $("input[name=scDest]:checked").value === "project", dest = $("#scFolder").textContent;
+    urls.forEach(url => S.scQ.push({ url, st: "wait", ...(toProject ? { root: P.root } : { dest }) }));
+    $("#scUrl").value = ""; scDraw(); scRun();
   };
+  scDraw();
 }
 
 // ------------------------------------------------------------------ Spotify (tool)
@@ -766,7 +811,8 @@ function renderDiscover() {
       <div id="dSeeds" class="row" style="margin-bottom:12px"></div>
       <div class="row" style="align-items:flex-start">
         <div style="flex:1;min-width:300px"><div class="row">
-          <input type="text" id="dUrl" placeholder="Lien SoundCloud d'un morceau" style="flex:1"><button class="btn" id="dAddUrl">Ajouter</button></div></div>
+          <input type="text" id="dUrl" placeholder="Lien SoundCloud d'un morceau" style="flex:1"><button class="btn" id="dAddUrl">Ajouter</button></div>
+          <div class="row" style="margin-top:8px"><button class="btn" id="dSet">Depuis le set</button></div><div id="dSetList" class="dlib"></div></div>
         <div style="flex:1;min-width:300px"><input type="text" id="dQ" placeholder="Chercher dans la bibliothèque (artiste, titre)" style="width:100%">
           <div id="dLib" class="dlib"></div></div></div></div>
     <div class="panel"><div class="row">
@@ -801,6 +847,17 @@ function renderDiscover() {
     });
   };
   $("#dQ").value = S.dQ || ""; $("#dQ").oninput = libBox;
+  $("#dSet").onclick = () => {
+    const box = $("#dSetList"); if (box.innerHTML) { box.innerHTML = ""; return; }
+    const tm = byId(), ids = [...new Set([...P.set, ...(P.blocks || []).slice(1).flatMap(b => b.ids)])].map(i => tm[i]).filter(Boolean);
+    if (!P.set.length) { box.innerHTML = `<div class="muted" style="padding:6px 2px">Aucun set généré.</div>`; return; }
+    const used = new Set(S.dSeeds.map(d => d.id).filter(Boolean));
+    box.innerHTML = `<div style="max-height:260px;overflow:auto">` + ids.filter(t => !used.has(t.id)).map(t => `<div class="dhit" data-id="${t.id}">${thumb(t)}<div class="name"><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></div></div>`).join("") + `</div>`;
+    $$("#dSetList .dhit").forEach(h => h.onclick = () => {
+      const t = tm[h.dataset.id]; if (!t) return;
+      addSeed({ id: t.id, label: `${t.artist} - ${t.title}`, cover: t.has_cover ? coverUrl(t) : "" }); h.remove();
+    });
+  };
   $("#dAddUrl").onclick = () => {
     const url = $("#dUrl").value.trim(); if (!url) return;
     if (!/^https?:\/\/(www\.|m\.|on\.)?soundcloud\.com\//i.test(url)) return toast("Lien SoundCloud invalide.", true);
