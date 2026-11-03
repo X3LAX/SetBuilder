@@ -78,10 +78,13 @@ genre). Strongly prefer DJ versions: when an extended mix exists, give its exact
 Never repeat a track from the list. Only suggest tracks you are confident exist on Spotify; exact artist and title."""
 
 QUERIES_PROMPT = """You help a club DJ dig SoundCloud for niche, unofficial remixes, edits, bootlegs and flips made by \
-independent producers. Given 2-3 seed tracks, work out their scene and style, then write SoundCloud search queries \
+independent producers. Given a few seed tracks, work out their scene and style, then write SoundCloud search queries \
 that surface similar unofficial reworks. Mix: (1) songs that remixers in this scene love to rework, as \
 "<artist> <song> remix|edit|bootleg" (real songs only), (2) genre / vibe keywords such as "afro house edit", \
 "latin tech house bootleg", "guaracha flip". Short queries, no quotes, no duplicates, no DJ mixes or sets."""
+
+GROUP_HINT = (" There are many seeds: FIRST group them by style / vibe (2-5 groups), then spread your queries across the "
+              "groups, a few per group, each query faithful to one group. Never average the groups into vague queries.")
 
 ERA_TEXT = {"90s": "the 1990s", "2000s": "the 2000s", "2010s": "the 2010s", "recent": "the last 3 years"}
 
@@ -100,7 +103,7 @@ def _filter_hint(filters):
 CLASSIFY_PROMPT = """You sort SoundCloud uploads for a club DJ. Each item: title (t), uploader (u), genre (g), \
 duration in seconds (d). For each, give: kind = remix | edit | bootleg | flip | mashup | original | mix (DJ mix / set / \
 podcast) | other; unofficial = true when it is a rework made by someone other than the original artist and not an \
-official label release; fit = 0-10, how well it matches the style of the seed tracks below (genre, energy, vibe); \
+official label release; fit = 0-10, how well it matches the style of the CLOSEST seed track below (genre, energy, vibe), not the average of all seeds; \
 reason = at most 8 words, in French; \
 orig_year = approximate release year of the ORIGINAL song being reworked (0 if you do not know); orig_pop = how famous \
 that original song is: hit (mainstream hit), known (well known in its scene), niche. Keep every id."""
@@ -369,7 +372,7 @@ def discover_queries(seeds, progress=lambda i, n, m: None, filters=None):
     """seeds: [{artist, title, genre?}] -> 12-15 SoundCloud search queries; cached by seeds."""
     lines = _seed_lines(seeds)
     cache = _load_cache()
-    qs = cache.setdefault("discover_q", {})
+    qs = cache.setdefault("discover_q2", {})
     hint = _filter_hint(filters)
     k = _norm("|".join(lines)) + hint
     if k in qs:
@@ -378,7 +381,8 @@ def discover_queries(seeds, progress=lambda i, n, m: None, filters=None):
     if prov is None:
         raise AIUnavailable("IA non configurée (Réglages).")
     progress(0, 1, f"IA ({LABEL[prov]}) : idées de recherche…")
-    res = ASK[prov](QUERIES_PROMPT + hint + "\nWrite 14 queries.", [{"seeds": lines}], QUERIES_SCHEMA, _level("discover"))
+    group = GROUP_HINT if len(lines) > 3 else ""
+    res = ASK[prov](QUERIES_PROMPT + group + hint + "\nWrite 14 queries.", [{"seeds": lines}], QUERIES_SCHEMA, _level("discover"))
     out = list(dict.fromkeys(r["q"].strip() for r in res if r.get("q", "").strip()))[:15]
     qs[k] = out
     _save_cache(cache)
@@ -389,7 +393,7 @@ def classify_candidates(items, seeds, progress=lambda i, n, m: None):
     """items: [{url, title, uploader, genre, duration}] -> {url: {kind, unofficial, fit, reason, orig_year, orig_pop}}; cached per url + seeds."""
     sig = _norm("|".join(_seed_lines(seeds)))
     cache = _load_cache()
-    store = cache.setdefault("discover_sort2", {})
+    store = cache.setdefault("discover_sort3", {})
     result, todo = {}, []
     for it in items:
         k = f"{it['url']}|{sig}"
@@ -400,7 +404,7 @@ def classify_candidates(items, seeds, progress=lambda i, n, m: None):
     if todo:
         small = [{"id": str(n), "t": it["title"], "u": it["uploader"], "g": it.get("genre") or "",
                   "d": int(it.get("duration") or 0)} for n, it in enumerate(todo)]
-        system = CLASSIFY_PROMPT + "\nSeed tracks:\n" + "\n".join(_seed_lines(seeds))
+        system = CLASSIFY_PROMPT + "\nSeed tracks (several styles possible: judge fit against the closest seed or group of seeds):\n" + "\n".join(_seed_lines(seeds))
         prov = provider()
         if prov is None:
             raise AIUnavailable("IA non configurée (Réglages).")

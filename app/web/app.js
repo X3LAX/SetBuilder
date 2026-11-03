@@ -798,26 +798,28 @@ const discAudio = (() => {
 
 function renderDiscover() {
   $("#title").textContent = "Découverte";
-  const P = S.proj;
+  let P = S.proj;
   if (!P) { $("#view").innerHTML = `<div class="empty"><b>Aucun projet ouvert</b>Choisis ou crée d'abord un projet.</div>`; return; }
   S.dSeeds = S.dSeeds || []; S.dOpt = S.dOpt || { hide: true, count: 40, showOff: false };
+  if (S.dOpt.direct === undefined) S.dOpt.direct = true;
   const KINDS = [["remix", "Remix"], ["edit", "Edit"], ["bootleg", "Bootleg"], ["flip", "Flip"], ["mashup", "Mashup"]];
   S.dOpt.f = Object.assign({ era: "all", original: "all", uploaded: 0, kinds: KINDS.map(k => k[0]) }, S.dOpt.f || {});
   const F = S.dOpt.f;
   const opts = (list, cur) => list.map(([v, l]) => `<option value="${v}" ${String(cur) === String(v) ? "selected" : ""}>${l}</option>`).join("");
   $("#view").innerHTML = `
     <div class="panel"><h2>Morceaux de départ</h2>
-      <p class="hint">Jusqu'à 3 morceaux servent de référence pour trouver des remixes et versions peu connus qui montent sur SoundCloud.</p>
+      <p class="hint">Jusqu'à 10 morceaux servent de référence pour trouver des remixes et versions peu connus qui montent sur SoundCloud.</p>
       <div id="dSeeds" class="row" style="margin-bottom:12px"></div>
       <div class="row" style="align-items:flex-start">
         <div style="flex:1;min-width:300px"><div class="row">
           <input type="text" id="dUrl" placeholder="Lien SoundCloud d'un morceau" style="flex:1"><button class="btn" id="dAddUrl">Ajouter</button></div>
-          <div class="row" style="margin-top:8px"><button class="btn" id="dSet">Depuis le set</button></div><div id="dSetList" class="dlib"></div></div>
+          <div class="row" style="margin-top:8px"><button class="btn" id="dSet">Depuis le set</button><button class="btn" id="dAllSet">Tout le set</button><button class="btn" id="dFull">Depuis la bibliothèque</button></div><div id="dSetList" class="dlib"></div><div id="dFullList"></div></div>
         <div style="flex:1;min-width:300px"><input type="text" id="dQ" placeholder="Chercher dans la bibliothèque (artiste, titre)" style="width:100%">
           <div id="dLib" class="dlib"></div></div></div></div>
     <div class="panel"><div class="row">
       <label class="check"><input type="checkbox" id="dHide" ${S.dOpt.hide ? "checked" : ""}> Masquer ce qui est déjà sorti officiellement (vérifié sur Deezer)</label>
       <label class="check"><input type="checkbox" id="dShowOff" ${S.dOpt.showOff ? "checked" : ""}> Afficher aussi les remix officiels (liste séparée)</label>
+      <label class="check"><input type="checkbox" id="dDirect" ${S.dOpt.direct ? "checked" : ""}> Ajouter directement à la bibliothèque</label>
       <label class="field" style="flex-direction:row;align-items:center;gap:8px">Résultats<select id="dN">${[20, 40, 60].map(n => `<option ${S.dOpt.count === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
       <span class="spacer"></span><button class="btn primary" id="dGo">Chercher</button></div>
       <div class="row dpresets" id="dPre"></div>
@@ -828,13 +830,16 @@ function renderDiscover() {
         <div class="field">Types<div class="dkinds" id="fKinds"></div></div>
         <span class="muted" id="dHint"></span></div></div>
     <div id="dRes"></div>`;
+  const MAX_SEEDS = 10;
   const seedBox = () => {
     $("#dSeeds").innerHTML = S.dSeeds.map((d, i) => `<span class="dseed">${d.cover ? `<img class="thumb" src="${esc(d.cover)}" onerror="this.outerHTML='<div class=\\'thumb none\\'>♪</div>'">` : `<div class="thumb none">♪</div>`}
       <span class="dt" title="${esc(d.label)}">${esc(d.label)}</span><button class="icon" data-rm="${i}" title="Retirer">✕</button></span>`).join("")
       || `<span class="muted">Aucun morceau choisi.</span>`;
-    $$("#dSeeds [data-rm]").forEach(b => b.onclick = () => { S.dSeeds.splice(+b.dataset.rm, 1); seedBox(); libBox(); });
+    if (S.dSeeds.length >= 2) $("#dSeeds").insertAdjacentHTML("beforeend", `<a href="#" id="dClear" class="muted">Tout retirer</a>`);
+    if ($("#dClear")) $("#dClear").onclick = e => { e.preventDefault(); S.dSeeds = []; seedBox(); libBox(); if (typeof fullBox === "function") fullBox(); };
+    $$("#dSeeds [data-rm]").forEach(b => b.onclick = () => { S.dSeeds.splice(+b.dataset.rm, 1); seedBox(); libBox(); if (typeof fullBox === "function") fullBox(); });
   };
-  const addSeed = d => { if (S.dSeeds.length >= 3) return toast("3 morceaux au maximum."); S.dSeeds.push(d); seedBox(); libBox(); };
+  const addSeed = d => { if (S.dSeeds.length >= MAX_SEEDS) return toast(`${MAX_SEEDS} morceaux au maximum.`); S.dSeeds.push(d); seedBox(); libBox(); if (typeof fullBox === "function") fullBox(); };
   const libBox = () => {
     const q = $("#dQ").value.trim().toLowerCase(); S.dQ = $("#dQ").value;
     if (!q) { $("#dLib").innerHTML = ""; return; }
@@ -858,6 +863,34 @@ function renderDiscover() {
       addSeed({ id: t.id, label: `${t.artist} - ${t.title}`, cover: t.has_cover ? coverUrl(t) : "" }); h.remove();
     });
   };
+  $("#dAllSet").onclick = () => {
+    const tm = byId(), ids = [...new Set([...P.set, ...(P.blocks || []).slice(1).flatMap(b => b.ids)])].map(i => tm[i]).filter(Boolean);
+    if (!ids.length) return toast("Aucun set généré.", true);
+    const used = new Set(S.dSeeds.map(d => d.id).filter(Boolean)), free = ids.filter(t => !used.has(t.id)), room = MAX_SEEDS - S.dSeeds.length;
+    if (!room) return toast(`${MAX_SEEDS} morceaux au maximum.`);
+    const pick = free.length <= room ? free : Array.from({ length: room }, (_, i) => free[Math.floor((2 * i + 1) * free.length / (2 * room))]);
+    pick.forEach(t => S.dSeeds.push({ id: t.id, label: `${t.artist} - ${t.title}`, cover: t.has_cover ? coverUrl(t) : "" }));
+    seedBox(); libBox(); if (typeof fullBox === "function") fullBox(); $("#dSetList").innerHTML = "";
+    if (free.length > room) toast(`${pick.length} morceaux pris dans le set`);
+  };
+  const fullBox = () => {
+    const box = $("#dFullList"); if (!box.innerHTML) return;
+    const q = ($("#dFq")?.value || "").trim().toLowerCase(), used = new Set(S.dSeeds.map(d => d.id).filter(Boolean));
+    const list = P.tracks.filter(t => !used.has(t.id) && (!q || `${t.artist} ${t.title}`.toLowerCase().includes(q)))
+      .sort((a, b) => (a.artist || "").localeCompare(b.artist || "") || (a.title || "").localeCompare(b.title || ""));
+    $("#dFullRows").innerHTML = list.map(t => `<div class="dhit" data-id="${t.id}">${thumb(t)}<div class="name"><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}${t.bpm ? ` · ${Math.round(t.bpm)} BPM` : ""}${t.analysed && t.camelot ? ` · ${esc(t.camelot)}` : ""}</div></div></div>`).join("")
+      || `<div class="muted" style="padding:6px 2px">Aucun résultat.</div>`;
+    $$("#dFullRows .dhit").forEach(h => h.onclick = () => {
+      const t = P.tracks.find(x => String(x.id) === h.dataset.id); if (!t) return;
+      addSeed({ id: t.id, label: `${t.artist} - ${t.title}`, cover: t.has_cover ? coverUrl(t) : "" });
+    });
+  };
+  $("#dFull").onclick = () => {
+    const box = $("#dFullList"); if (box.innerHTML) { box.innerHTML = ""; return; }
+    if (!P.tracks.length) { box.innerHTML = `<div class="muted" style="padding:6px 2px">Bibliothèque vide.</div>`; return; }
+    box.innerHTML = `<input type="text" id="dFq" placeholder="Filtrer…" style="width:100%;margin-top:6px"><div id="dFullRows" class="dlib" style="max-height:260px;overflow:auto"></div>`;
+    $("#dFq").oninput = fullBox; fullBox(); $("#dFq").focus();
+  };
   $("#dAddUrl").onclick = () => {
     const url = $("#dUrl").value.trim(); if (!url) return;
     if (!/^https?:\/\/(www\.|m\.|on\.)?soundcloud\.com\//i.test(url)) return toast("Lien SoundCloud invalide.", true);
@@ -865,6 +898,7 @@ function renderDiscover() {
   };
   $("#dUrl").addEventListener("keydown", e => { if (e.key === "Enter") $("#dAddUrl").click(); });
   $("#dHide").onchange = e => S.dOpt.hide = e.target.checked;
+  $("#dDirect").onchange = e => { S.dOpt.direct = e.target.checked; if (S.dRes) drawRes(); };
   $("#dShowOff").onchange = e => S.dOpt.showOff = e.target.checked;
   $("#dN").onchange = e => S.dOpt.count = +e.target.value;
   const kindBox = () => {
@@ -911,12 +945,29 @@ function renderDiscover() {
     const r = await job("/api/discover", { root: P.root, seeds, count: S.dOpt.count, hide_spotify: S.dOpt.hide, show_official: !!S.dOpt.showOff, filters: { ...F, kinds: [...F.kinds] } }, "Découverte SoundCloud");
     r._f = { era: F.era, original: F.original }; S.dRes = r; S.dSel = new Set(); drawRes(); hint();
   };
+  // Downloads one result; returns true on success. With "direct", imports into the library (no analysis here: see finishDirect).
   const dl = async it => {
-    const r = await job("/api/soundcloud", { root: P.root, url: it.url }, "Téléchargement SoundCloud");
-    if (!r.count) { toast(r.errors?.[0] || "Rien de nouveau à télécharger (déjà téléchargé ?).", !!r.errors?.length); return false; }
-    const known = new Set((S.rows || []).map(x => x.src));
-    S.rows = (S.rows || []).concat(r.rows.filter(x => !known.has(x.src)));
-    it.added = true; S.dSel.delete(it.url); return true;
+    it.err = "";
+    try {
+      const r = await job("/api/soundcloud", { root: P.root, url: it.url }, "Téléchargement SoundCloud");
+      if (!r.count) { it.err = r.errors?.[0] || "Rien de nouveau à télécharger (déjà téléchargé ?)."; if (!S.dOpt.direct) toast(it.err, true); return false; }
+      if (!S.dOpt.direct) {
+        const known = new Set((S.rows || []).map(x => x.src));
+        S.rows = (S.rows || []).concat(r.rows.filter(x => !known.has(x.src)));
+        it.added = true; S.dSel.delete(it.url); return true;
+      }
+      const rows = r.rows.map(x => ({ ...x, skip: x.skip || x.duration < 20 })), ok = rows.filter(x => !x.skip);
+      if (!ok.length) { it.err = rows.some(x => x.health === "bad") ? "Fichier abîmé : non ajouté." : "Fichier ignoré (trop court)."; return false; }
+      await job("/api/import/run", { root: P.root, rows, fetch_covers: true }, "Import");
+      it.inLib = true; it.added = true; S.dSel.delete(it.url); S.dDirty = true; return true;
+    } catch (e) { it.err = String(e?.message || e || "Erreur"); return false; }
+  };
+  // Same follow-up as the Import screen: analysis (cached tracks are skipped) + file check, then reload the project.
+  const finishDirect = async () => {
+    if (!S.dDirty) return; S.dDirty = false;
+    await job("/api/analyze", { root: P.root }, "Analyse BPM / tonalité / énergie").catch(() => {});
+    await job("/api/quality", { root: P.root }, "Contrôle des fichiers").catch(() => {});
+    await loadProject(P.root); P = S.proj;
   };
   const rowHtml = (it, i, off) => {
         const tr = Math.max(0, Math.min(1, +it.trend > 1 ? it.trend / 100 : +it.trend || 0));
@@ -930,10 +981,11 @@ function renderDiscover() {
           ${it.cover ? `<img class="thumb big" loading="lazy" src="${esc(it.cover)}" onerror="this.outerHTML='<div class=\\'thumb big none\\'>♪</div>'">` : `<div class="thumb big none">♪</div>`}
           <button class="icon dprev" data-url="${esc(it.url)}" title="Écouter un extrait">▶</button>
           <div class="dinfo"><div class="t" title="${esc(it.title)}">${esc(it.title)}</div>
+            <div class="lnk muted" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><a href="${esc(it.url)}" target="_blank" rel="noopener" title="${esc(it.url)}" style="color:inherit">lien : ${esc(it.url.replace(/^https?:\/\/(www\.)?/i, ""))}</a></div>
             <div class="a">${esc(it.artist)} · ${fmt(it.duration)} · ▶ ${compact(it.plays)} · ♥ ${compact(it.likes)} · ${ageFr(it.age_days)}</div>
-            <div>${off ? `<span class="chip warn">Officiel</span>` : ""}${bd}${meta}</div>${it.reason ? `<div class="reason muted">${esc(it.reason)}</div>` : ""}</div>
+            <div>${off ? `<span class="chip warn">Officiel</span>` : ""}${bd}${meta}</div>${it.reason ? `<div class="reason muted">${esc(it.reason)}</div>` : ""}${it.err ? `<div class="reason" style="color:var(--bad,#e5484d)">${esc(it.err)}</div>` : ""}</div>
           <div class="ebar" title="Tendance ${Math.round(tr * 100)} %"><i style="width:${Math.max(4, tr * 100)}%"></i></div>
-          <div class="dact">${it.added ? `<span class="chip ok">Ajouté</span>` : `<button class="btn small primary ddl">Télécharger</button>`}
+          <div class="dact">${it.added ? `<span class="chip ok">${it.inLib ? "Dans la bibliothèque ✓" : "Ajouté"}</span>` : `<button class="btn small primary ddl">Télécharger</button>`}
             <button class="btn small dopen">Ouvrir</button><button class="btn small dno" title="Ne plus proposer ce morceau">Pas pour moi</button></div></div>`;
   };
   function drawRes() {
@@ -956,7 +1008,11 @@ function renderDiscover() {
       $(".dsel", row).onchange = e => { e.target.checked ? S.dSel.add(it.url) : S.dSel.delete(it.url); $("#dAll").textContent = `Tout télécharger (${S.dSel.size})`; $("#dAll").disabled = !S.dSel.size; };
       $(".dprev", row).onclick = () => discAudio.toggle(it.url);
       $(".dopen", row).onclick = () => api("/api/open", { path: it.url });
-      if ($(".ddl", row)) $(".ddl", row).onclick = async () => { if (await dl(it)) { toast("Ajouté à la liste d'import."); drawRes(); } };
+      if ($(".ddl", row)) $(".ddl", row).onclick = async () => {
+        const ok = await dl(it);
+        if (ok && it.inLib) { await finishDirect(); toast("Ajouté à la bibliothèque."); } else if (ok) toast("Ajouté à la liste d'import.");
+        drawRes();
+      };
       $(".dno", row).onclick = async () => {
         await api("/api/discover/ignore", { root: P.root, url: it.url });
         S.dRes[key] = (S.dRes[key] || []).filter(x => x !== it); S.dSel.delete(it.url); drawRes();
@@ -964,9 +1020,11 @@ function renderDiscover() {
     });
     bind("#dList", items, "results"); bind("#dOff", offs, "official_results");
     $("#dAll").onclick = async () => {
-      let n = 0;
-      for (const it of items.concat(offs).filter(x => S.dSel.has(x.url) && !x.added)) { try { if (await dl(it)) n++; } catch { break; } }
-      drawRes(); if (n) toast(`${n} morceaux ajoutés : vérifie les noms dans « Importer ».`);
+      let n = 0, bad = 0;
+      for (const it of items.concat(offs).filter(x => S.dSel.has(x.url) && !x.added)) { if (await dl(it)) n++; else bad++; }
+      if (S.dOpt.direct) await finishDirect().catch(() => {});
+      drawRes();
+      if (n || bad) toast(S.dOpt.direct ? `${n} ajoutés à la bibliothèque${bad ? `, ${bad} en erreur` : ""}.` : `${n} morceaux ajoutés : vérifie les noms dans « Importer ».${bad ? ` ${bad} en erreur.` : ""}`, !!bad);
     };
   }
   seedBox(); libBox(); if (S.dRes) { S.dSel = S.dSel || new Set(); drawRes(); }

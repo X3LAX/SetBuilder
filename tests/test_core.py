@@ -226,6 +226,29 @@ def test_deezer_official_and_cache():
     assert len(main) == 6 and main[-1]["official"] and off == []
 
 
+def test_discover_budget_many_seeds():
+    from setbuilder import discover as d, ai
+    seeds = [{"title": f"Song{i}", "artist": f"Artist{i}", "genre": "house"} for i in range(10)]
+    qs = d.det_queries(seeds, {"era": "2000s"})
+    assert len(qs) <= d.MAX_DET and {f"song{i} remix" for i in range(10)} <= set(qs)   # every seed represented
+    assert len(d.det_queries(seeds[:1])) == 9 and d.spread(list(range(10)), 6) == [0, 2, 4, 5, 7, 9] and d.spread([1, 2], 6) == [1, 2]
+    calls = []
+    def fake(url, flat=True):
+        calls.append(url)
+        if "soundcloud.com/" in url and "/recommended" not in url:
+            n = url.rsplit("/", 1)[1]
+            return [{"webpage_url": url, "title": f"A{n} - T{n}", "uploader": f"A{n}", "duration": 200}]
+        return []
+    old = (d._entries, ai.discover_queries)
+    d._entries, ai.discover_queries = fake, lambda *a, **k: [f"ai query {i}" for i in range(15)]
+    try:
+        d.discover([{"url": f"https://soundcloud.com/a/s{i}"} for i in range(10)], use_ai=True, search=lambda q: [])
+    finally:
+        d._entries, ai.discover_queries = old
+    assert sum(c.startswith("scsearch20:") for c in calls) <= d.MAX_QUERIES
+    assert sum(c.endswith("/recommended") for c in calls) <= d.MAX_RELATED
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

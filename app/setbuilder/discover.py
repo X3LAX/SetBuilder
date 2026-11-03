@@ -18,6 +18,9 @@ from .config import which
 
 MIN_SEC, MAX_SEC = 120, 540
 MAX_CANDIDATES = 150
+MAX_QUERIES = 30       # SoundCloud searches in total (deterministic + AI), whatever the number of seeds
+MAX_DET = 22           # of which deterministic ones; the AI gets the rest (at least 8)
+MAX_RELATED = 6        # seeds whose /recommended list is read
 WORKERS = 16
 KINDS_WANTED = {"remix", "edit", "bootleg", "flip", "mashup"}
 OFFICIAL_BUDGET = 15   # seconds for the whole Deezer check
@@ -227,19 +230,32 @@ def resolve_seeds(seeds, project=None):
 ERA_WORDS = {"90s": ["90s"], "2000s": ["2000s"], "2010s": ["2010s"], "recent": []}
 
 
+def spread(items, k):
+    """k items evenly spread over the list (all of them when it is short)."""
+    n = len(items)
+    if n <= k:
+        return list(items)
+    return [items[(2 * i + 1) * n // (2 * k)] for i in range(k)]
+
+
 def det_queries(seeds, filters=None):
+    """Era words first, then the seeds' queries interleaved (fewer per seed as seeds grow), capped at MAX_DET."""
     qs, era = [], (filters or {}).get("era")
     if era in ERA_WORDS and era != "all":
         qs += [f"{w} {k}" for w in ERA_WORDS[era] for k in ("remix", "edit", "bootleg")]
         qs += ["throwback edit"] if era != "recent" else []
+    per = max(1, min(9, (MAX_DET - len(qs)) // max(1, len(seeds))))
+    lists = []
     for s in seeds:
         core, artist = library.core_title(s["title"]), library.clean_text(s["artist"]).split(",")[0].split("&")[0].strip()
-        qs += [f"{core} remix", f"{core} edit", f"{core} bootleg", f"{core} flip", f"{artist} {core} remix",
-               f"{artist} bootleg", f"{artist} edit"]
+        sq = [f"{core} remix", f"{core} edit", f"{artist} {core} remix", f"{core} bootleg", f"{artist} edit",
+              f"{core} flip", f"{artist} bootleg"]
         if s.get("genre"):
-            qs += [f"{s['genre']} edit", f"{s['genre']} bootleg"]
-            qs += [f"{s['genre']} {w} edit" for w in ERA_WORDS.get(era, [])]
-    return list(dict.fromkeys(q.strip() for q in qs if q.strip()))
+            sq += [f"{s['genre']} edit", f"{s['genre']} bootleg"]
+            sq += [f"{s['genre']} {w} edit" for w in ERA_WORDS.get(era, [])]
+        lists.append(sq[:per])
+    qs += [q for row in zip(*[l + [""] * (per - len(l)) for l in lists]) for q in row]
+    return list(dict.fromkeys(q.strip() for q in qs if q.strip()))[:MAX_DET]
 
 
 # ------------------------------------------------------------ filters
@@ -306,9 +322,13 @@ def discover(seeds, project=None, count=40, hide_official=True, use_ai=True, pro
     rs = resolve_seeds(seeds, project)
     if not rs:
         raise ai.AIUnavailable("Impossible de lire les morceaux de départ.")
-    for s in rs:   # library seeds: find them on SoundCloud for the related tracks
-        if not s["url"]:
-            s["url"] = find_on_soundcloud(s["artist"], s["title"])
+    # related tracks for at most MAX_RELATED seeds spread over the list; library ones are looked up on SoundCloud (parallel)
+    rel_seeds = spread(rs, MAX_RELATED)
+    todo_url = [s for s in rel_seeds if not s["url"]]
+    if todo_url:
+        with ThreadPoolExecutor(min(WORKERS, len(todo_url))) as ex:
+            for s, u in zip(todo_url, ex.map(lambda s: find_on_soundcloud(s["artist"], s["title"]), todo_url)):
+                s["url"] = u
     ignored = {clean_url(u) for u in (project.data.get("discover_ignored", []) if project else [])}
     known = {(library.core_title(parse_title(t["title"])[1]), version_of(t["title"]))
              for t in (project.data["tracks"].values() if project else [])}
@@ -318,11 +338,11 @@ def discover(seeds, project=None, count=40, hide_official=True, use_ai=True, pro
     ai_ok = False
     progress(0, 1, "SoundCloud : recherche des remixes…")
     with ThreadPoolExecutor(WORKERS) as ex:
-        rel = [ex.submit(_entries, s["url"] + "/recommended") for s in rs if s["url"]]
+        rel = [ex.submit(_entries, s["url"] + "/recommended") for s in rel_seeds if s["url"]]
         srch = [ex.submit(_entries, f"scsearch20:{q}") for q in queries]
         if use_ai:
             try:
-                extra = [q for q in ai.discover_queries(rs, progress, filters) if q not in queries][:max(8, 30 - len(queries))]
+                extra = [q for q in ai.discover_queries(rs, progress, filters) if q not in queries][:max(0, MAX_QUERIES - len(queries))]
                 srch += [ex.submit(_entries, f"scsearch20:{q}") for q in extra]
                 queries += extra
                 ai_ok = True
