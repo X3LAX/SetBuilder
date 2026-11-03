@@ -23,15 +23,22 @@ async function job(path, body, label) {
   if (jobBusy) { toast("Une tâche est déjà en cours, attends qu'elle finisse."); throw new Error("busy"); }
   jobBusy = true;
   const box = $("#job"); box.hidden = false;
-  $(".msg", box).textContent = label || "…"; $(".bar i", box).style.width = "3%";
+  $(".msg", box).textContent = label || "…"; $(".bar i", box).style.width = "3%"; $(".jsteps", box).textContent = "";
+  const stop = $("#jobStop", box); stop.disabled = false; stop.textContent = "Arrêter";
+  const t0 = Date.now();
   try {
     const { job: id } = await api(path, body);
+    stop.onclick = () => { stop.disabled = true; stop.textContent = "Arrêt…"; api(`/api/jobs/${id}/cancel`, {}); };
     for (;;) {
       await new Promise(r => setTimeout(r, 450));
       const j = await api(`/api/jobs/${id}`);
       if (j.total) $(".bar i", box).style.width = `${Math.max(3, 100 * j.done / j.total)}%`;
       $(".msg", box).textContent = `${label || ""}${j.total ? ` — ${j.done}/${j.total}` : ""}${j.message ? " · " + j.message : ""}`;
+      const now = (Date.now() - t0) / 1000, st = j.steps || [];
+      $(".jsteps", box).textContent = st.length > 1 || now > 5 ? st.map((s, i) =>
+        `${s.name} ${Math.round((i + 1 < st.length ? st[i + 1].start : now) - s.start)} s`).join("  ·  ") + `  —  ${Math.round(now)} s au total` : "";
       if (j.state === "done") return j.result;
+      if (j.state === "cancelled") { toast("Arrêté."); throw new Error("cancelled"); }
       if (j.state === "error") { toast(j.error, true); throw new Error(j.error); }
     }
   } finally { jobBusy = false; box.hidden = true; }
@@ -749,6 +756,10 @@ function renderDiscover() {
   const P = S.proj;
   if (!P) { $("#view").innerHTML = `<div class="empty"><b>Aucun projet ouvert</b>Choisis ou crée d'abord un projet.</div>`; return; }
   S.dSeeds = S.dSeeds || []; S.dOpt = S.dOpt || { hide: true, count: 40 };
+  const KINDS = [["remix", "Remix"], ["edit", "Edit"], ["bootleg", "Bootleg"], ["flip", "Flip"], ["mashup", "Mashup"]];
+  S.dOpt.f = Object.assign({ era: "all", original: "all", uploaded: 0, kinds: KINDS.map(k => k[0]) }, S.dOpt.f || {});
+  const F = S.dOpt.f;
+  const opts = (list, cur) => list.map(([v, l]) => `<option value="${v}" ${String(cur) === String(v) ? "selected" : ""}>${l}</option>`).join("");
   $("#view").innerHTML = `
     <div class="panel"><h2>Morceaux de départ</h2>
       <p class="hint">Jusqu'à 3 morceaux servent de référence pour trouver des remixes et versions peu connus qui montent sur SoundCloud.</p>
@@ -762,7 +773,17 @@ function renderDiscover() {
       <label class="check"><input type="checkbox" id="dHide" ${S.dOpt.hide ? "checked" : ""}> Masquer ce qui est déjà sur Spotify</label>
       <span class="muted">(si Spotify est connecté)</span>
       <label class="field" style="flex-direction:row;align-items:center;gap:8px">Résultats<select id="dN">${[20, 40, 60].map(n => `<option ${S.dOpt.count === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
-      <span class="spacer"></span><button class="btn primary" id="dGo">Chercher</button></div></div>
+      <span class="spacer"></span><button class="btn primary" id="dGo">Chercher</button></div>
+      <div class="row dpresets"><span class="muted">Préréglages</span>
+        <button class="btn small" data-pre="throwback">Throwback 2000 remixé</button>
+        <button class="btn small" data-pre="tubes">Tubes du moment remixés</button>
+        <button class="btn small" data-pre="niche">Pépites niche</button></div>
+      <div class="row dfilters">
+        <label class="field">Époque de l'original<select id="fEra">${opts([["all", "Toutes"], ["90s", "Années 90"], ["2000s", "Années 2000"], ["2010s", "Années 2010"], ["recent", "Récent"]], F.era)}</select></label>
+        <label class="field">Original<select id="fOrig">${opts([["all", "Tous"], ["hits", "Tubes connus"], ["niche", "Niche"]], F.original)}</select></label>
+        <label class="field">Remix mis en ligne<select id="fUp">${opts([[0, "Peu importe"], [30, "< 1 mois"], [180, "< 6 mois"], [365, "< 1 an"]], F.uploaded)}</select></label>
+        <div class="field">Types<div class="dkinds" id="fKinds"></div></div>
+        <span class="muted" id="dHint"></span></div></div>
     <div id="dRes"></div>`;
   const seedBox = () => {
     $("#dSeeds").innerHTML = S.dSeeds.map((d, i) => `<span class="dseed">${d.cover ? `<img class="thumb" src="${esc(d.cover)}" onerror="this.outerHTML='<div class=\\'thumb none\\'>♪</div>'">` : `<div class="thumb none">♪</div>`}
@@ -791,12 +812,32 @@ function renderDiscover() {
   $("#dUrl").addEventListener("keydown", e => { if (e.key === "Enter") $("#dAddUrl").click(); });
   $("#dHide").onchange = e => S.dOpt.hide = e.target.checked;
   $("#dN").onchange = e => S.dOpt.count = +e.target.value;
+  const kindBox = () => {
+    $("#fKinds").innerHTML = KINDS.map(([k, l]) => `<button type="button" class="kchip ${F.kinds.includes(k) ? "on" : ""}" data-k="${k}">${l}</button>`).join("");
+    $$("#fKinds .kchip").forEach(b => b.onclick = () => {
+      const k = b.dataset.k, on = F.kinds.includes(k);
+      if (on && F.kinds.length === 1) return;
+      F.kinds = on ? F.kinds.filter(x => x !== k) : F.kinds.concat(k);
+      kindBox(); if (S.dRes) drawRes();
+    });
+  };
+  const hint = () => {
+    const f = S.dRes && S.dRes._f;
+    $("#dHint").textContent = f && (f.era !== F.era || f.original !== F.original) ? "Relance la recherche pour appliquer" : "";
+  };
+  const sync = () => { $("#fEra").value = F.era; $("#fOrig").value = F.original; $("#fUp").value = String(F.uploaded); kindBox(); hint(); if (S.dRes) drawRes(); };
+  $("#fEra").onchange = e => { F.era = e.target.value; hint(); };
+  $("#fOrig").onchange = e => { F.original = e.target.value; hint(); };
+  $("#fUp").onchange = e => { F.uploaded = +e.target.value; if (S.dRes) drawRes(); };
+  const PRESETS = { throwback: { era: "2000s", original: "hits", uploaded: 365 }, tubes: { era: "recent", original: "hits", uploaded: 180 }, niche: { era: "all", original: "niche", uploaded: 180 } };
+  $$("[data-pre]").forEach(b => b.onclick = () => { Object.assign(F, PRESETS[b.dataset.pre]); sync(); });
+  kindBox();
   $("#dGo").onclick = async () => {
     if (!S.dSeeds.length) return toast("Ajoute au moins un morceau de départ.", true);
     const seeds = S.dSeeds.map(d => d.id !== undefined ? { id: d.id } : { url: d.url });
     discAudio.stop();
-    const r = await job("/api/discover", { root: P.root, seeds, count: S.dOpt.count, hide_spotify: S.dOpt.hide }, "Découverte SoundCloud");
-    S.dRes = r; S.dSel = new Set(); drawRes();
+    const r = await job("/api/discover", { root: P.root, seeds, count: S.dOpt.count, hide_spotify: S.dOpt.hide, filters: { ...F, kinds: [...F.kinds] } }, "Découverte SoundCloud");
+    r._f = { era: F.era, original: F.original }; S.dRes = r; S.dSel = new Set(); drawRes(); hint();
   };
   const dl = async it => {
     const r = await job("/api/soundcloud", { root: P.root, url: it.url }, "Téléchargement SoundCloud");
@@ -807,21 +848,28 @@ function renderDiscover() {
   };
   function drawRes() {
     const r = S.dRes; if (!r) { $("#dRes").innerHTML = ""; return; }
-    const items = r.results || [], st = r.stats || {};
+    const st = r.stats || {};
+    const items = (r.results || []).filter(it => (!F.uploaded || it.age_days == null || it.age_days <= F.uploaded) && (!it.kind || F.kinds.includes(it.kind)));
+    const SKIP = { era: "époque de l'original", original: "popularité de l'original", uploaded: "date de mise en ligne", kinds: "types" };
+    const skipped = (st.filters_skipped || []).map(k => SKIP[k] || k);
     $("#dRes").innerHTML = `<div class="panel"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">${items.length} résultats</h2>
         <span class="muted">${st.candidates ?? "?"} candidats analysés · ${st.kept ?? items.length} gardés · IA : ${st.ai ? "oui" : "non"}</span><span class="spacer"></span>
         <button class="btn" id="dAll" ${S.dSel.size ? "" : "disabled"}>Tout télécharger (${S.dSel.size})</button></div>
+      ${skipped.length ? `<div class="muted dskip">Filtres non appliqués sans IA : ${esc(skipped.join(", "))}</div>` : ""}
       <div id="dList">${items.map((it, i) => {
         const tr = Math.max(0, Math.min(1, +it.trend > 1 ? it.trend / 100 : +it.trend || 0));
         const bd = (it.badges || []).map(b => `<span class="chip ${/hausse/i.test(b) ? "rising" : /gratuit/i.test(b) ? "free" : ""}">${esc(b)}</span>`).join("")
           + (it.free_download && !(it.badges || []).some(b => /gratuit/i.test(b)) ? `<span class="chip free">Téléchargement gratuit</span>` : "");
+        const KL = { remix: "Remix", edit: "Edit", bootleg: "Bootleg", flip: "Flip", mashup: "Mashup" }, PL = { hit: "tube", known: "connu", niche: "niche" };
+        const meta = (it.kind && KL[it.kind] && !(it.badges || []).some(b => b.toLowerCase() === KL[it.kind].toLowerCase()) ? `<span class="chip remix">${KL[it.kind]}</span>` : "")
+          + (it.orig_year ? `<span class="chip meta">original ${it.orig_year}</span>` : "") + (PL[it.orig_pop] ? `<span class="chip meta">${PL[it.orig_pop]}</span>` : "");
         return `<div class="drow" data-i="${i}">
           <input type="checkbox" class="dsel" ${S.dSel.has(it.url) ? "checked" : ""} ${it.added ? "disabled" : ""}>
           ${it.cover ? `<img class="thumb big" loading="lazy" src="${esc(it.cover)}" onerror="this.outerHTML='<div class=\\'thumb big none\\'>♪</div>'">` : `<div class="thumb big none">♪</div>`}
           <button class="icon dprev" data-url="${esc(it.url)}" title="Écouter un extrait">▶</button>
           <div class="dinfo"><div class="t" title="${esc(it.title)}">${esc(it.title)}</div>
             <div class="a">${esc(it.artist)} · ${fmt(it.duration)} · ▶ ${compact(it.plays)} · ♥ ${compact(it.likes)} · ${ageFr(it.age_days)}</div>
-            <div>${bd}</div>${it.reason ? `<div class="reason muted">${esc(it.reason)}</div>` : ""}</div>
+            <div>${bd}${meta}</div>${it.reason ? `<div class="reason muted">${esc(it.reason)}</div>` : ""}</div>
           <div class="ebar" title="Tendance ${Math.round(tr * 100)} %"><i style="width:${Math.max(4, tr * 100)}%"></i></div>
           <div class="dact">${it.added ? `<span class="chip ok">Ajouté</span>` : `<button class="btn small primary ddl">Télécharger</button>`}
             <button class="btn small dopen">Ouvrir</button><button class="btn small dno" title="Ne plus proposer ce morceau">Pas pour moi</button></div></div>`;

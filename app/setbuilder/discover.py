@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 from . import ai, library, spotify
@@ -19,7 +19,8 @@ from .config import which
 MIN_SEC, MAX_SEC = 120, 540
 MAX_CANDIDATES = 150
 WORKERS = 16
-KINDS_WANTED = {"remix", "edit", "bootleg", "flip"}
+KINDS_WANTED = {"remix", "edit", "bootleg", "flip", "mashup"}
+SPOTIFY_BUDGET = 15   # seconds for the whole Spotify check
 PREVIEW_WORDS = r"\b(preview|snippet|teaser|sample|clip|promo|short version)\b"
 MIX_WORDS = r"\b(dj set|live set|podcast|mixtape|warm.?up|radio show|b2b|mix ?\d+|vol\.? ?\d+|episode|session)\b"
 PLAIN_EDIT = r"\b(radio|clean|extended|original|club|dirty|intro|short)\s+edit\b"
@@ -50,13 +51,15 @@ def version_of(title):
 
 def guess_kind(title, duration=0):
     t = (title or "").lower()
-    if duration > MAX_SEC * 2 or re.search(MIX_WORDS, t) and not re.search(r"remix|edit|bootleg|flip", t):
+    if duration > MAX_SEC * 2 or re.search(MIX_WORDS, t) and not re.search(r"remix|edit|bootleg|flip|mashup", t):
         return "mix"
     if re.search(r"\bbootleg\b", t):
         return "bootleg"
     if re.search(r"\bflip\b", t):
         return "flip"
-    if re.search(r"\b(remix|rework|refix|remake|mashup|re-?edit)\b", t):
+    if re.search(r"\bmash-?ups?\b", t):
+        return "mashup"
+    if re.search(r"\b(remix|rework|refix|remake|re-?edit)\b", t):
         return "remix"
     if re.search(r"\b(edit|vip)\b", t) and not re.search(PLAIN_EDIT, t):
         return "edit"
@@ -101,7 +104,7 @@ def make_badges(c):
     b = []
     if c["kind"] in KINDS_WANTED and c.get("unofficial", True):
         b.append("Remix non officiel")
-    if c["kind"] in ("edit", "bootleg"):
+    if c["kind"] in ("edit", "bootleg", "mashup"):
         b.append(c["kind"].capitalize())
     if c.get("free_download"):
         b.append("Téléchargement gratuit")
@@ -221,21 +224,110 @@ def resolve_seeds(seeds, project=None):
 
 # ------------------------------------------------------------ queries
 
-def det_queries(seeds):
-    qs = []
+ERA_WORDS = {"90s": ["90s"], "2000s": ["2000s"], "2010s": ["2010s"], "recent": []}
+
+
+def det_queries(seeds, filters=None):
+    qs, era = [], (filters or {}).get("era")
+    if era in ERA_WORDS and era != "all":
+        qs += [f"{w} {k}" for w in ERA_WORDS[era] for k in ("remix", "edit", "bootleg")]
+        qs += ["throwback edit"] if era != "recent" else []
     for s in seeds:
         core, artist = library.core_title(s["title"]), library.clean_text(s["artist"]).split(",")[0].split("&")[0].strip()
         qs += [f"{core} remix", f"{core} edit", f"{core} bootleg", f"{core} flip", f"{artist} {core} remix",
                f"{artist} bootleg", f"{artist} edit"]
         if s.get("genre"):
             qs += [f"{s['genre']} edit", f"{s['genre']} bootleg"]
+            qs += [f"{s['genre']} {w} edit" for w in ERA_WORDS.get(era, [])]
     return list(dict.fromkeys(q.strip() for q in qs if q.strip()))
+
+
+# ------------------------------------------------------------ filters
+
+ALL_KINDS = ["remix", "edit", "bootleg", "flip", "mashup"]
+
+
+def norm_filters(f):
+    f = f or {}
+    kinds = [k for k in (f.get("kinds") or ALL_KINDS) if k in ALL_KINDS] or ALL_KINDS
+    return {"era": f.get("era") if f.get("era") in ("90s", "2000s", "2010s", "recent") else "all",
+            "original": f.get("original") if f.get("original") in ("hits", "niche") else "all",
+            "uploaded": int(f.get("uploaded") or 0), "kinds": kinds}
+
+
+def apply_filters(cands, f, ai_ok, now_year=None):
+    """-> (kept, skipped). Era / original filters need the AI's verdict: without it they are skipped."""
+    f, skipped = norm_filters(f), []
+    year = now_year or datetime.now().year
+    ranges = {"90s": (1990, 1999), "2000s": (2000, 2009), "2010s": (2010, 2019), "recent": (year - 3, year)}
+    out = [c for c in cands if c["kind"] in f["kinds"]]
+    if f["uploaded"]:
+        out = [c for c in out if c.get("age_days") is not None and c["age_days"] <= f["uploaded"]]
+    if f["era"] != "all":
+        if ai_ok:
+            lo, hi = ranges[f["era"]]
+            out = [c for c in out if lo <= (c.get("orig_year") or 0) <= hi]
+        else:
+            skipped.append("era")
+    if f["original"] != "all":
+        if ai_ok:
+            want = {"hits": ("hit", "known"), "niche": ("niche",)}[f["original"]]
+            out = [c for c in out if c.get("orig_pop") in want]
+        else:
+            skipped.append("original")
+    return out, skipped
+
+
+def spotify_check(cands, budget=SPOTIFY_BUDGET, progress=lambda i, n, m: None):
+    """Sets c['on_spotify'] with one search per track (cached 30 days), 4 workers. Stops at the first rate limit or
+    after `budget` seconds; unchecked ones stay False (shown). Returns the number answered."""
+    deadline, stop, answered = time.time() + budget, threading.Event(), [0]
+    todo = []
+    for c in cands:
+        artist, song = parse_title(c["title"], c["uploader"])
+        hit = spotify.cache_get(artist, song)
+        if hit is None:
+            todo.append((c, artist, song))
+        else:
+            c["on_spotify"] = hit
+            answered[0] += 1
+
+    def check(item):
+        c, artist, song = item
+        if stop.is_set() or time.time() > deadline:
+            return
+        try:
+            res = spotify.quick_official(artist, song)
+        except spotify.RateLimited:
+            stop.set()
+            return
+        except Exception:  # noqa: BLE001 - unknown stays shown
+            return
+        if res is not None:
+            c["on_spotify"] = res
+            spotify.cache_put(artist, song, res)
+            answered[0] += 1
+    ex = ThreadPoolExecutor(4)
+    futs = [ex.submit(check, it) for it in todo]
+    try:
+        for n in range(len(futs)):
+            left = deadline - time.time()
+            if left <= 0:
+                break
+            wait(futs[:n + 1], timeout=left)
+            progress(n, len(futs), "Spotify : vérification…")
+    finally:
+        stop.set()
+        ex.shutdown(wait=False, cancel_futures=True)
+    spotify.cache_save()
+    return answered[0]
 
 
 # ------------------------------------------------------------ main
 
-def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, progress=lambda i, n, m: None):
+def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, progress=lambda i, n, m: None, filters=None):
     t0 = time.time()
+    filters = norm_filters(filters)
     progress(0, 1, "Lecture des morceaux de départ…")
     rs = resolve_seeds(seeds, project)
     if not rs:
@@ -247,21 +339,22 @@ def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, prog
     known = {(library.core_title(parse_title(t["title"])[1]), version_of(t["title"]))
              for t in (project.data["tracks"].values() if project else [])}
 
-    queries = det_queries(rs)
+    # deterministic searches and related tracks start right away, the AI's ideas join when they arrive
+    queries = det_queries(rs, filters)
     ai_ok = False
-    if use_ai:
-        try:
-            queries = list(dict.fromkeys(ai.discover_queries(rs, progress) + queries))
-            ai_ok = True
-        except ai.AIUnavailable:
-            pass
-    queries = queries[:30]
-
-    # a. related tracks (titles only, need a full lookup later)  b. searches (flat entries already carry the stats)
     progress(0, 1, "SoundCloud : recherche des remixes…")
     with ThreadPoolExecutor(WORKERS) as ex:
         rel = [ex.submit(_entries, s["url"] + "/recommended") for s in rs if s["url"]]
         srch = [ex.submit(_entries, f"scsearch20:{q}") for q in queries]
+        if use_ai:
+            try:
+                extra = [q for q in ai.discover_queries(rs, progress, filters) if q not in queries][:max(8, 30 - len(queries))]
+                srch += [ex.submit(_entries, f"scsearch20:{q}") for q in extra]
+                queries += extra
+                ai_ok = True
+            except ai.AIUnavailable:
+                pass
+        progress(0, 1, "SoundCloud : recherche des remixes…")
         related = [to_candidate(e, "related") for f in rel for e in f.result()[:35]]
         found = [to_candidate(e, "search") for f in srch for e in f.result()]
     pool = [c for c in related + found if c and guess_kind(c["title"], c["duration"]) in KINDS_WANTED]
@@ -301,7 +394,7 @@ def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, prog
     if ai_ok:
         try:
             verdict = ai.classify_candidates([{k: c[k] for k in ("url", "title", "uploader", "genre", "duration")}
-                                              for c in sorted(pool, key=pre, reverse=True)[:90]], rs, progress)
+                                              for c in sorted(pool, key=pre, reverse=True)[:75]], rs, progress)
         except ai.AIUnavailable:
             ai_ok = False
     kept = []
@@ -313,7 +406,10 @@ def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, prog
         if c["kind"] not in KINDS_WANTED or not c["unofficial"]:
             continue
         c["fit"] = v["fit"] if v else heuristic_fit(c, seed_words)
+        if v and c["fit"] < 5:   # the AI says another style (dubstep, hard techno…): not for this set
+            continue
         c["reason"] = v["reason"] if v else ""
+        c["orig_year"], c["orig_pop"] = (v.get("orig_year") or None, v.get("orig_pop")) if v else (None, None)
         c["trend"] = trend_score(c["plays"], c["likes"], c["reposts"], c["age_days"])
         c["score"] = final_score(c["trend"], c["fit"])
         c["on_spotify"] = False
@@ -322,25 +418,16 @@ def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, prog
     if ai_ok:   # unclassified leftovers were not seen by the AI: keep them but behind
         kept = [c for c in kept if c["url"] in verdict] + [c for c in kept if c["url"] not in verdict]
 
-    # Spotify: an exact match means the remix is official
+    kept, skipped = apply_filters(kept, filters, ai_ok)
+
+    # Spotify: an exact match means the remix is official (one cached search per track, short budget)
     try:
         spotify_on = spotify.status().get("connected")
     except Exception:  # noqa: BLE001
         spotify_on = False
+    checked = 0
     if spotify_on:
-        head = kept[:40]
-
-        def check(c):
-            artist, song = parse_title(c["title"], c["uploader"])
-            try:
-                hit = spotify.find_track(artist, song, allow_other_remix=False)
-                return bool(hit and hit["match"] == "exact")
-            except Exception:  # noqa: BLE001 - rate limit etc.: unknown counts as not on Spotify
-                return False
-        with ThreadPoolExecutor(4) as ex:
-            for n, (c, on) in enumerate(zip(head, ex.map(check, head))):
-                progress(n, len(head), "Spotify : vérification…")
-                c["on_spotify"] = on
+        checked = spotify_check(kept[:max(count, 30)], progress=progress)
         kept = [c for c in kept if not (c["on_spotify"] and hide_spotify)]
         kept.sort(key=lambda c: c["on_spotify"])   # stable: official ones last
 
@@ -354,11 +441,12 @@ def discover(seeds, project=None, count=40, hide_spotify=True, use_ai=True, prog
     for c in kept:
         c["badges"] = make_badges(c)
         results.append({k: c[k] for k in ("url", "title", "duration", "plays", "likes", "reposts", "age_days", "trend",
-                                          "fit", "score", "kind", "reason", "on_spotify", "free_download", "genre")}
+                                          "fit", "score", "kind", "reason", "on_spotify", "free_download", "genre", "orig_year", "orig_pop")}
                        | {"artist": c["uploader"], "cover": c["cover"], "badges": c["badges"]})
     progress(1, 1, f"{len(results)} résultats en {time.time() - t0:.0f} s")
     return {"results": results, "queries": queries,
-            "stats": {"candidates": n_cands, "kept": len(results), "ai": ai_ok}}
+            "stats": {"candidates": n_cands, "kept": len(results), "ai": ai_ok, "filters_skipped": skipped,
+                      "spotify_checked": checked}}
 
 
 # ------------------------------------------------------------ preview

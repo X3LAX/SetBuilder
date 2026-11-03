@@ -145,6 +145,64 @@ def test_discover_pure():
     c = {"kind": "edit", "unofficial": True, "free_download": True, "plays": 9000, "age_days": 10}
     assert d.make_badges(c) == ["Remix non officiel", "Edit", "Téléchargement gratuit", "En hausse", "Récent"]
 
+def test_discover_filters_and_mashup():
+    from setbuilder import discover as d
+    assert d.guess_kind("A - B (X Mashup)") == "mashup" and d.guess_kind("A - B (X Remix)") == "remix"
+    c = lambda **k: {"kind": "remix", "age_days": 10, "orig_year": 2005, "orig_pop": "hit"} | k
+    cs = [c(), c(orig_year=1995), c(orig_year=0, orig_pop=None), c(kind="mashup", age_days=400), c(orig_pop="niche")]
+    assert len(d.apply_filters(cs, {}, True)[0]) == 5
+    assert len(d.apply_filters(cs, {"era": "2000s"}, True)[0]) == 3
+    assert d.apply_filters(cs, {"era": "2000s", "original": "hits"}, True)[0] == [cs[0], cs[3]]
+    assert d.apply_filters(cs, {"original": "niche"}, True)[0] == [cs[4]]
+    assert len(d.apply_filters(cs, {"uploaded": 30}, True)[0]) == 4
+    assert len(d.apply_filters(cs, {"kinds": ["mashup"]}, True)[0]) == 1
+    assert len(d.apply_filters([c(orig_year=2025)], {"era": "recent"}, True, 2026)[0]) == 1
+    out, skipped = d.apply_filters(cs, {"era": "2000s", "original": "hits"}, False)
+    assert len(out) == 5 and skipped == ["era", "original"]
+    assert "2000s remix" in d.det_queries([{"title": "Tusa", "artist": "Karol G"}], {"era": "2000s"})
+
+
+def test_spotify_quick_official_and_cache(tmp_path=None):
+    import tempfile
+    from setbuilder import discover as d, spotify
+    spotify.CACHE_FILE = Path(tempfile.mkdtemp()) / "spotify-cache.json"
+    spotify._cache = None
+
+    class R:
+        status_code = 200
+        def __init__(self, items): self.items = items
+        def json(self): return {"tracks": {"items": self.items}}
+    it = lambda name, art: {"name": name, "artists": [{"name": art}], "uri": name}
+    calls = []
+    def fake(method, path, wait=True, **kw):
+        calls.append(kw["params"]["q"])
+        return R([it("Tusa - Foo Remix", "Karol G"), it("Tusa", "Karol G")])
+    spotify._call = fake
+    assert spotify.quick_official("Karol G", "Tusa (Foo Remix)") is True
+    assert spotify.quick_official("Karol G", "Tusa (Bar Remix)") is False   # another remix is not the same version
+    assert spotify.quick_official("Karol G", "Tusa") is True and len(calls) == 3
+    spotify._call = lambda *a, **k: R([it("Tusa - Foo Remix", "Someone Else")])
+    assert spotify.quick_official("Karol G", "Tusa (Foo Remix)") is False
+    # cache
+    spotify.cache_get("a", "b")
+    spotify.cache_put("A", "b", True)
+    spotify.cache_save()
+    spotify._cache = None
+    assert spotify.cache_get("a", "B") is True and spotify.cache_get("a", "c") is None
+    spotify._cache["a|old"] = [True, 0]
+    assert spotify.cache_get("a", "old") is None
+    # rate limit stops the loop: later tracks stay unchecked and nothing sleeps
+    seen = []
+    def limited(artist, title):
+        seen.append(title)
+        raise spotify.RateLimited("429")
+    spotify.quick_official = limited
+    cands = [{"title": f"X - Song{i} (Z Remix)", "uploader": "x", "on_spotify": False} for i in range(40)]
+    import time
+    t0 = time.time()
+    d.spotify_check(cands, budget=5)
+    assert len(seen) <= 4 and not any(c["on_spotify"] for c in cands) and time.time() - t0 < 3
+
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

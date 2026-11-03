@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 
 import anthropic
 
@@ -53,9 +54,10 @@ NAMES_SCHEMA = _schema({"id": {"type": "string"}, "artist": {"type": "string"}, 
 KNOWN_SCHEMA = _schema({"id": {"type": "string"}, "known": {"type": "integer"}, "original": {"type": "string"}})
 SIMILAR_SCHEMA = _schema({"artist": {"type": "string"}, "title": {"type": "string"}})
 QUERIES_SCHEMA = _schema({"q": {"type": "string"}})
-KINDS = ["remix", "edit", "bootleg", "flip", "original", "mix", "other"]
+KINDS = ["remix", "edit", "bootleg", "flip", "mashup", "original", "mix", "other"]
 CLASSIFY_SCHEMA = _schema({"id": {"type": "string"}, "kind": {"type": "string", "enum": KINDS},
-                           "unofficial": {"type": "boolean"}, "fit": {"type": "integer"}, "reason": {"type": "string"}})
+                           "unofficial": {"type": "boolean"}, "fit": {"type": "integer"}, "reason": {"type": "string"},
+                           "orig_year": {"type": "integer"}, "orig_pop": {"type": "string", "enum": ["hit", "known", "niche"]}})
 
 NAMES_PROMPT = """You clean up DJ music libraries. Each item is a messy audio file: file name (f), folder (d), \
 embedded tags (ta/tt) and a rule-based guess (ga/gt). Return the real artist and title as a DJ store lists them: \
@@ -81,11 +83,27 @@ that surface similar unofficial reworks. Mix: (1) songs that remixers in this sc
 "<artist> <song> remix|edit|bootleg" (real songs only), (2) genre / vibe keywords such as "afro house edit", \
 "latin tech house bootleg", "guaracha flip". Short queries, no quotes, no duplicates, no DJ mixes or sets."""
 
+ERA_TEXT = {"90s": "the 1990s", "2000s": "the 2000s", "2010s": "the 2010s", "recent": "the last 3 years"}
+
+
+def _filter_hint(filters):
+    f, out = filters or {}, []
+    if f.get("era") in ERA_TEXT:
+        out.append(f"The ORIGINAL songs must date from {ERA_TEXT[f['era']]}, but the remixes / edits must be current, in the "
+                   f"seeds' style: e.g. \"2000s reggaeton tech house edit\", or specific famous songs of that era + \"remix\".")
+    if f.get("original") == "hits":
+        out.append("Target famous, mainstream original songs.")
+    elif f.get("original") == "niche":
+        out.append("Target lesser-known, niche original songs.")
+    return ("\nFilters:\n" + "\n".join(out)) if out else ""
+
 CLASSIFY_PROMPT = """You sort SoundCloud uploads for a club DJ. Each item: title (t), uploader (u), genre (g), \
-duration in seconds (d). For each, give: kind = remix | edit | bootleg | flip | original | mix (DJ mix / set / \
+duration in seconds (d). For each, give: kind = remix | edit | bootleg | flip | mashup | original | mix (DJ mix / set / \
 podcast) | other; unofficial = true when it is a rework made by someone other than the original artist and not an \
 official label release; fit = 0-10, how well it matches the style of the seed tracks below (genre, energy, vibe); \
-reason = at most 8 words, in French. Keep every id."""
+reason = at most 8 words, in French; \
+orig_year = approximate release year of the ORIGINAL song being reworked (0 if you do not know); orig_pop = how famous \
+that original song is: hit (mainstream hit), known (well known in its scene), niche. Keep every id."""
 
 
 # ------------------------------------------------------------ cache
@@ -347,19 +365,20 @@ def _seed_lines(seeds):
             for x in seeds]
 
 
-def discover_queries(seeds, progress=lambda i, n, m: None):
+def discover_queries(seeds, progress=lambda i, n, m: None, filters=None):
     """seeds: [{artist, title, genre?}] -> 12-15 SoundCloud search queries; cached by seeds."""
     lines = _seed_lines(seeds)
     cache = _load_cache()
     qs = cache.setdefault("discover_q", {})
-    k = _norm("|".join(lines))
+    hint = _filter_hint(filters)
+    k = _norm("|".join(lines)) + hint
     if k in qs:
         return qs[k]
     prov = provider()
     if prov is None:
         raise AIUnavailable("IA non configurée (Réglages).")
     progress(0, 1, f"IA ({LABEL[prov]}) : idées de recherche…")
-    res = ASK[prov](QUERIES_PROMPT + "\nWrite 14 queries.", [{"seeds": lines}], QUERIES_SCHEMA, _level("discover"))
+    res = ASK[prov](QUERIES_PROMPT + hint + "\nWrite 14 queries.", [{"seeds": lines}], QUERIES_SCHEMA, _level("discover"))
     out = list(dict.fromkeys(r["q"].strip() for r in res if r.get("q", "").strip()))[:15]
     qs[k] = out
     _save_cache(cache)
@@ -367,10 +386,10 @@ def discover_queries(seeds, progress=lambda i, n, m: None):
 
 
 def classify_candidates(items, seeds, progress=lambda i, n, m: None):
-    """items: [{url, title, uploader, genre, duration}] -> {url: {kind, unofficial, fit, reason}}; cached per url + seeds."""
+    """items: [{url, title, uploader, genre, duration}] -> {url: {kind, unofficial, fit, reason, orig_year, orig_pop}}; cached per url + seeds."""
     sig = _norm("|".join(_seed_lines(seeds)))
     cache = _load_cache()
-    store = cache.setdefault("discover_sort", {})
+    store = cache.setdefault("discover_sort2", {})
     result, todo = {}, []
     for it in items:
         k = f"{it['url']}|{sig}"
@@ -382,13 +401,26 @@ def classify_candidates(items, seeds, progress=lambda i, n, m: None):
         small = [{"id": str(n), "t": it["title"], "u": it["uploader"], "g": it.get("genre") or "",
                   "d": int(it.get("duration") or 0)} for n, it in enumerate(todo)]
         system = CLASSIFY_PROMPT + "\nSeed tracks:\n" + "\n".join(_seed_lines(seeds))
-        for r in _run(system, small, CLASSIFY_SCHEMA, progress, task="discover_sort"):
+        prov = provider()
+        if prov is None:
+            raise AIUnavailable("IA non configurée (Réglages).")
+        # small batches in parallel: one big call is several times slower than 4 short ones at once
+        chunks = [small[i:i + 25] for i in range(0, len(small), 25)]
+        progress(0, len(small), f"IA ({LABEL[prov]}) : tri des résultats…")
+        rows, level = [], _level("discover_sort")
+        with ThreadPoolExecutor(4) as ex:
+            for n, part in enumerate(ex.map(lambda c: ASK[prov](system, c, CLASSIFY_SCHEMA, level), chunks), 1):
+                rows += part
+                progress(min(len(small), 25 * n), len(small), f"IA ({LABEL[prov]}) : tri des résultats…")
+        for r in rows:
             try:
                 it = todo[int(r["id"])]
             except (ValueError, IndexError):
                 continue
             entry = {"kind": r["kind"] if r["kind"] in KINDS else "other", "unofficial": bool(r["unofficial"]),
-                     "fit": max(0, min(10, int(r["fit"]))), "reason": r["reason"][:80]}
+                     "fit": max(0, min(10, int(r["fit"]))), "reason": r["reason"][:80],
+                     "orig_year": max(0, int(r.get("orig_year") or 0)),
+                     "orig_pop": r.get("orig_pop") if r.get("orig_pop") in ("hit", "known", "niche") else None}
             result[it["url"]] = store[f"{it['url']}|{sig}"] = entry
         _save_cache(cache)
     return result

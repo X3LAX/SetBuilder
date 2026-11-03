@@ -2,6 +2,7 @@
 import re
 import subprocess
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -147,26 +148,47 @@ def project_view(p):
             "set_minutes": round(sum(by[i]["play"] for i in set_ids) / 60, 1)}
 
 
+class JobCancelled(Exception):
+    pass
+
+
 def start_job(fn, *args):
     jid = uuid.uuid4().hex[:8]
-    job = {"id": jid, "state": "running", "done": 0, "total": 0, "message": "", "result": None, "error": None}
+    job = {"id": jid, "state": "running", "done": 0, "total": 0, "message": "", "result": None, "error": None,
+           "steps": [], "cancel": False}
     JOBS[jid] = job
+    t0 = time.time()
 
     def progress(i, n, msg=""):
+        if job["cancel"]:
+            raise JobCancelled()
         job.update(done=i, total=n, message=msg)
+        step = msg.split("—")[0].rstrip(" …0123456789/")
+        if step and (not job["steps"] or job["steps"][-1]["name"] != step):
+            job["steps"].append({"name": step, "start": round(time.time() - t0, 1)})
 
     def run():
         try:
             job["result"] = fn(progress, *args)
             job["state"] = "done"
+        except JobCancelled:
+            job["state"] = "cancelled"
         except (ai.AIUnavailable, spotify.SpotifyError) as e:
             job.update(state="error", error=str(e))
         except Exception as e:  # noqa: BLE001 - surface any failure in the UI
             traceback.print_exc()
             job.update(state="error", error=f"{type(e).__name__}: {e}")
+        job["elapsed"] = round(time.time() - t0, 1)
 
     threading.Thread(target=run, daemon=True).start()
     return {"job": jid}
+
+
+@app.post("/api/jobs/{jid}/cancel")
+def job_cancel(jid: str):
+    if jid in JOBS:
+        JOBS[jid]["cancel"] = True
+    return {"ok": True}
 
 
 @app.get("/api/jobs/{jid}")
@@ -644,7 +666,8 @@ def discover_run(body: dict):
         raise HTTPException(400, "Choisis au moins un morceau de départ.")
     use_ai = ai.status()["ok"]
     return start_job(lambda progress: discover.discover(
-        seeds, p, int(body.get("count", 40)), body.get("hide_spotify", True), use_ai, progress))
+        seeds, p, int(body.get("count", 40)), body.get("hide_spotify", True), use_ai, progress,
+        body.get("filters") or {}))
 
 
 @app.post("/api/discover/ignore")
