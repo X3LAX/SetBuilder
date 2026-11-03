@@ -146,6 +146,7 @@ nav a .badge { margin-left: auto; font-style: normal; font-size: 11px; color: va
 nav a .badge.todo { color: var(--warn); }
 nav a .badge.done { color: var(--ok); }
 nav a b.tool { background: var(--panel2); font-size: 12px; }
+nav a b.di { color: var(--accent2); }
 nav a b.sc { color: #ff7a1a; } nav a b.sp { color: #1ed760; }
 nav a.on b.tool { background: var(--panel2); }
 .banner { display: flex; align-items: center; gap: 12px; background: #1d2433; border: 1px solid #2c3a55; border-radius: 10px;
@@ -166,3 +167,26 @@ details.fold > summary::after { content: "▾"; color: var(--muted); margin-left
 details.fold:not([open]) > summary::after { content: "▸"; }
 details.fold[open] > summary { margin-bottom: 12px; }
 .sp-ok { color: #1ed760; }
+
+.dseed { display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 16px; padding: 3px 4px 3px 3px; max-width: 320px; }
+.dseed .thumb { width: 26px; height: 26px; border-radius: 50%; }
+.dseed .dt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dlib { margin-top: 6px; display: grid; gap: 2px; }
+.dhit { display: flex; align-items: center; gap: 10px; padding: 4px 6px; border-radius: 7px; cursor: pointer; }
+.dhit:hover { background: var(--panel2); }
+.dhit .thumb { width: 28px; height: 28px; }
+.dhit .name { min-width: 0; } .dhit .t, .dhit .a { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .dhit .a { color: var(--muted); font-size: 12px; }
+.drow { display: flex; align-items: center; gap: 12px; padding: 9px 4px; border-bottom: 1px solid #1c1f28; }
+.drow:hover { background: #141720; }
+.thumb.big { width: 52px; height: 52px; flex: none; border-radius: 6px; }
+.dprev { flex: none; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line); }
+.dinfo { flex: 1; min-width: 0; }
+.dinfo .t { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dinfo .a { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dinfo .reason { font-size: 12px; margin-top: 2px; }
+.drow .ebar { flex: none; width: 54px; }
+.dact { display: flex; gap: 6px; align-items: center; flex: none; }
+.chip.rising { background: #3a2416; color: var(--accent2); }
+.chip.free { background: #1b3048; color: #8cc4ff; }
+ul.dq { margin: 6px 0 0; padding-left: 20px; font-size: 12.5px; color: var(--muted); }
+@media (max-width: 1150px) { .drow { flex-wrap: wrap; } .dact { width: 100%; justify-content: flex-end; } }

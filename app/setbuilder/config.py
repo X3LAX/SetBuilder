@@ -1,4 +1,4 @@
-"""Paths, settings and the API key (kept in the system keychain via keyring)."""
+"""Paths, settings and secrets (API key, Spotify token) in a private file of the support folder."""
 import json
 import os
 import shutil
@@ -44,25 +44,59 @@ def save_settings(s):
     tmp.replace(SETTINGS_FILE)
 
 
+SECRETS_FILE = SUPPORT / "secrets.json"
+_SECRETS = None
+
+
+def _secrets():
+    # a private file instead of the keychain: the unsigned venv Python made macOS ask the keychain
+    # password at every launch; secrets saved there before are moved here once
+    global _SECRETS
+    if _SECRETS is None:
+        try:
+            _SECRETS = json.loads(SECRETS_FILE.read_text())
+        except (OSError, ValueError):
+            _SECRETS = {}
+        if not _SECRETS.get("_migrated"):
+            try:
+                import keyring
+                for name, service in (("anthropic", KEYCHAIN_SERVICE), ("spotify", "SetBuilder-Spotify")):
+                    v = keyring.get_password(service, name)
+                    if v and name not in _SECRETS:
+                        _SECRETS[name] = v
+                _SECRETS["_migrated"] = True
+                _write_secrets()
+            except Exception:  # noqa: BLE001 - no keyring backend or access refused: try again next launch
+                pass
+    return _SECRETS
+
+
+def _write_secrets():
+    tmp = SECRETS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(_SECRETS))
+    os.chmod(tmp, 0o600)
+    tmp.replace(SECRETS_FILE)
+
+
+def get_secret(name):
+    return _secrets().get(name) or None
+
+
+def set_secret(name, value):
+    s = _secrets()
+    if value:
+        s[name] = value
+    else:
+        s.pop(name, None)
+    _write_secrets()
+
+
 def get_api_key():
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return os.environ["ANTHROPIC_API_KEY"]
-    try:
-        import keyring
-        return keyring.get_password(KEYCHAIN_SERVICE, "anthropic") or None
-    except Exception:  # noqa: BLE001 - no usable keyring backend
-        return None
+    return os.environ.get("ANTHROPIC_API_KEY") or get_secret("anthropic")
 
 
 def set_api_key(key):
-    import keyring
-    if key:
-        keyring.set_password(KEYCHAIN_SERVICE, "anthropic", key)
-    else:
-        try:
-            keyring.delete_password(KEYCHAIN_SERVICE, "anthropic")
-        except keyring.errors.PasswordDeleteError:
-            pass
+    set_secret("anthropic", key)
 
 
 def which(cmd):

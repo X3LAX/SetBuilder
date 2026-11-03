@@ -26,7 +26,7 @@ LEVELS = {
     "equilibre": {"api": "claude-sonnet-5-5", "claude": "sonnet", "effort": "low"},
     "max": {"api": "claude-opus-5-5", "claude": "opus", "effort": "medium"},
 }
-TASK_DEFAULT = {"names": "eco", "similar": "equilibre"}
+TASK_DEFAULT = {"names": "eco", "similar": "equilibre", "discover": "equilibre", "discover_sort": "eco"}
 API_MODEL = LEVELS["eco"]["api"]
 BATCH = {"api": 80, "claude": 80, "codex": 150}   # Codex has a large fixed cost per call
 CACHE_FILE = SUPPORT / "ai-cache.json"
@@ -52,6 +52,10 @@ NAMES_SCHEMA = _schema({"id": {"type": "string"}, "artist": {"type": "string"}, 
                         "confident": {"type": "boolean"}})
 KNOWN_SCHEMA = _schema({"id": {"type": "string"}, "known": {"type": "integer"}, "original": {"type": "string"}})
 SIMILAR_SCHEMA = _schema({"artist": {"type": "string"}, "title": {"type": "string"}})
+QUERIES_SCHEMA = _schema({"q": {"type": "string"}})
+KINDS = ["remix", "edit", "bootleg", "flip", "original", "mix", "other"]
+CLASSIFY_SCHEMA = _schema({"id": {"type": "string"}, "kind": {"type": "string", "enum": KINDS},
+                           "unofficial": {"type": "boolean"}, "fit": {"type": "integer"}, "reason": {"type": "string"}})
 
 NAMES_PROMPT = """You clean up DJ music libraries. Each item is a messy audio file: file name (f), folder (d), \
 embedded tags (ta/tt) and a rule-based guess (ga/gt). Return the real artist and title as a DJ store lists them: \
@@ -70,6 +74,18 @@ when known), suggest real, existing tracks that would fit in it: same genre, sub
 genre). Strongly prefer DJ versions: when an extended mix exists, give its exact title with the version, e.g. \
 "Song (Extended Mix)"; club remixes are welcome too. Mix well-known and fresh tracks. \
 Never repeat a track from the list. Only suggest tracks you are confident exist on Spotify; exact artist and title."""
+
+QUERIES_PROMPT = """You help a club DJ dig SoundCloud for niche, unofficial remixes, edits, bootlegs and flips made by \
+independent producers. Given 2-3 seed tracks, work out their scene and style, then write SoundCloud search queries \
+that surface similar unofficial reworks. Mix: (1) songs that remixers in this scene love to rework, as \
+"<artist> <song> remix|edit|bootleg" (real songs only), (2) genre / vibe keywords such as "afro house edit", \
+"latin tech house bootleg", "guaracha flip". Short queries, no quotes, no duplicates, no DJ mixes or sets."""
+
+CLASSIFY_PROMPT = """You sort SoundCloud uploads for a club DJ. Each item: title (t), uploader (u), genre (g), \
+duration in seconds (d). For each, give: kind = remix | edit | bootleg | flip | original | mix (DJ mix / set / \
+podcast) | other; unofficial = true when it is a rework made by someone other than the original artist and not an \
+official label release; fit = 0-10, how well it matches the style of the seed tracks below (genre, energy, vibe); \
+reason = at most 8 words, in French. Keep every id."""
 
 
 # ------------------------------------------------------------ cache
@@ -324,3 +340,55 @@ def test_provider(name):
 def test_key():
     anthropic.Anthropic(api_key=get_api_key()).models.retrieve(API_MODEL)
     return True
+
+
+def _seed_lines(seeds):
+    return [f"{x.get('artist', '')} - {x.get('title', '')}" + (f" | {x['genre']}" if x.get("genre") else "")
+            for x in seeds]
+
+
+def discover_queries(seeds, progress=lambda i, n, m: None):
+    """seeds: [{artist, title, genre?}] -> 12-15 SoundCloud search queries; cached by seeds."""
+    lines = _seed_lines(seeds)
+    cache = _load_cache()
+    qs = cache.setdefault("discover_q", {})
+    k = _norm("|".join(lines))
+    if k in qs:
+        return qs[k]
+    prov = provider()
+    if prov is None:
+        raise AIUnavailable("IA non configurée (Réglages).")
+    progress(0, 1, f"IA ({LABEL[prov]}) : idées de recherche…")
+    res = ASK[prov](QUERIES_PROMPT + "\nWrite 14 queries.", [{"seeds": lines}], QUERIES_SCHEMA, _level("discover"))
+    out = list(dict.fromkeys(r["q"].strip() for r in res if r.get("q", "").strip()))[:15]
+    qs[k] = out
+    _save_cache(cache)
+    return out
+
+
+def classify_candidates(items, seeds, progress=lambda i, n, m: None):
+    """items: [{url, title, uploader, genre, duration}] -> {url: {kind, unofficial, fit, reason}}; cached per url + seeds."""
+    sig = _norm("|".join(_seed_lines(seeds)))
+    cache = _load_cache()
+    store = cache.setdefault("discover_sort", {})
+    result, todo = {}, []
+    for it in items:
+        k = f"{it['url']}|{sig}"
+        if k in store:
+            result[it["url"]] = store[k]
+        else:
+            todo.append(it)
+    if todo:
+        small = [{"id": str(n), "t": it["title"], "u": it["uploader"], "g": it.get("genre") or "",
+                  "d": int(it.get("duration") or 0)} for n, it in enumerate(todo)]
+        system = CLASSIFY_PROMPT + "\nSeed tracks:\n" + "\n".join(_seed_lines(seeds))
+        for r in _run(system, small, CLASSIFY_SCHEMA, progress, task="discover_sort"):
+            try:
+                it = todo[int(r["id"])]
+            except (ValueError, IndexError):
+                continue
+            entry = {"kind": r["kind"] if r["kind"] in KINDS else "other", "unofficial": bool(r["unofficial"]),
+                     "fit": max(0, min(10, int(r["fit"]))), "reason": r["reason"][:80]}
+            result[it["url"]] = store[f"{it['url']}|{sig}"] = entry
+        _save_cache(cache)
+    return result

@@ -7,10 +7,10 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, analysis, covers, export, library, planner, quality, rekordbox_usb, soundcloud, spotify, usb
+from . import ai, analysis, covers, discover, export, library, planner, quality, rekordbox_usb, soundcloud, spotify, usb
 from .platform_utils import OS_NAME, open_path, reveal as reveal_path, run_in_terminal
 from .config import get_api_key, load_settings, save_settings, set_api_key
 
@@ -219,7 +219,8 @@ def ai_action(action: str, name: str):
 def update_settings(body: dict):
     s = load_settings()
     for k in ("remix_bonus", "windows_root", "fetch_covers", "use_ai", "ai_provider",
-              "codex_model", "spotify_client_id", "ai_level_names", "ai_level_similar"):
+              "codex_model", "spotify_client_id", "ai_level_names", "ai_level_similar",
+              "ai_level_discover", "ai_level_discover_sort"):
         if k in body:
             s[k] = body[k]
     save_settings(s)
@@ -631,6 +632,46 @@ def soundcloud_download(body: dict):
         return {"rows": rows, "files": files, "errors": errors[:20], "count": len(files)}
 
     return start_job(run)
+
+
+# ------------------------------------------------------------ Découverte
+
+@app.post("/api/discover")
+def discover_run(body: dict):
+    p = project(body["root"]) if body.get("root") else None
+    seeds = [s for s in body.get("seeds", []) if s.get("url") or s.get("id")]
+    if not seeds:
+        raise HTTPException(400, "Choisis au moins un morceau de départ.")
+    use_ai = ai.status()["ok"]
+    return start_job(lambda progress: discover.discover(
+        seeds, p, int(body.get("count", 40)), body.get("hide_spotify", True), use_ai, progress))
+
+
+@app.post("/api/discover/ignore")
+def discover_ignore(body: dict):
+    p = project(body["root"])
+    with LOCK:
+        ign = p.data.setdefault("discover_ignored", [])
+        if body["url"] not in ign:
+            ign.append(body["url"])
+            p.save()
+    return {"ok": True}
+
+
+@app.get("/api/discover/preview")
+def discover_preview(url: str):
+    if not soundcloud.is_soundcloud(url):
+        raise HTTPException(400)
+    gen = discover.preview_stream(url)
+    try:
+        first = next(gen)
+    except Exception as e:  # noqa: BLE001 - nothing to stream
+        raise HTTPException(502, "Extrait indisponible.") from e
+
+    def chunks():
+        yield first
+        yield from gen
+    return StreamingResponse(chunks(), media_type="audio/mpeg")
 
 
 # ------------------------------------------------------------ Spotify

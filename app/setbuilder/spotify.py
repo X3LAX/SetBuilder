@@ -11,6 +11,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from .config import get_secret, set_secret
+
 from .library import core_title
 
 AUTH = "https://accounts.spotify.com/authorize"
@@ -18,7 +20,7 @@ TOKEN = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
 SCOPES = ("playlist-modify-private playlist-modify-public playlist-read-private playlist-read-collaborative "
           "user-read-private")
-KEYCHAIN = "SetBuilder-Spotify"
+
 _pending = {}
 
 
@@ -26,25 +28,17 @@ class SpotifyError(Exception):
     pass
 
 
-# ------------------------------------------------------------ tokens (system keychain)
+# ------------------------------------------------------------ tokens
 
 def _load_token():
     try:
-        import keyring
-        return json.loads(keyring.get_password(KEYCHAIN, "spotify") or "null")
-    except Exception:  # noqa: BLE001 - missing entry, bad JSON or no keyring backend
+        return json.loads(get_secret("spotify") or "null")
+    except ValueError:
         return None
 
 
 def _save_token(tok):
-    import keyring
-    if tok:
-        keyring.set_password(KEYCHAIN, "spotify", json.dumps(tok))
-    else:
-        try:
-            keyring.delete_password(KEYCHAIN, "spotify")
-        except keyring.errors.PasswordDeleteError:
-            pass
+    set_secret("spotify", json.dumps(tok) if tok else None)
 
 
 def logout():

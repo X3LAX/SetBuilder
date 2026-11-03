@@ -119,6 +119,33 @@ def test_analysis_on_generated_track():
             assert r["camelot"] in analysis.CAMELOT.values() and r["duration"] > 39
 
 
+def test_discover_pure():
+    from setbuilder import discover as d
+    assert d.guess_kind("Bad Bunny - Una Velita (Jesus Fernandez Remix)") == "remix"
+    assert d.guess_kind("Rompe (Juos Bootleg)") == "bootleg"
+    assert d.guess_kind("Song (Kowski Edit)") == "edit" and d.guess_kind("Song (Radio Edit)") == "original"
+    assert d.guess_kind("Song (Dj X Flip)") == "flip" and d.guess_kind("Song (X VIP)") == "edit"
+    assert d.guess_kind("Latin House Mix 2026 live set") == "mix" and d.guess_kind("Song", 2000) == "mix"
+    hot, cold = d.trend_score(50000, 3000, 200, 20), d.trend_score(500, 5, 0, 900)
+    assert 0 <= cold < hot <= 100 and d.trend_score(0, 0, 0, None) >= 0
+    assert d.trend_score(5000, 300, 20, 30) > d.trend_score(5000, 300, 20, 600)
+    assert d.is_rising(10000, 10) and not d.is_rising(100, 400)
+    seeds = [{"title": "Dákiti", "url": "https://soundcloud.com/a/seed"}]
+    known = {(library.core_title("Tusa"), d.version_of("Tusa (Foo Edit)"))}
+    mk = lambda **k: {"url": "https://soundcloud.com/x/y", "title": "Artist - Song (Z Remix)", "duration": 200} | k
+    assert d.keep_candidate(mk(), seeds, known, set())
+    assert not d.keep_candidate(mk(duration=60), seeds, known, set())
+    assert not d.keep_candidate(mk(duration=2400), seeds, known, set())
+    assert not d.keep_candidate(mk(title="Song (Z Remix) preview"), seeds, known, set())
+    assert not d.keep_candidate(mk(), seeds, known, {"https://soundcloud.com/x/y"})
+    assert not d.keep_candidate(mk(url="https://soundcloud.com/a/seed?si=1"), seeds, known, set())
+    assert not d.keep_candidate(mk(title="Karol G - Tusa (Foo Edit)"), seeds, known, set())
+    assert d.keep_candidate(mk(title="Karol G - Tusa (Bar Edit)"), seeds, known, set())
+    assert len(d.dedupe([mk(), mk(url="https://soundcloud.com/x/y2")])) == 1
+    c = {"kind": "edit", "unofficial": True, "free_download": True, "plays": 9000, "age_days": 10}
+    assert d.make_badges(c) == ["Remix non officiel", "Edit", "Téléchargement gratuit", "En hausse", "Récent"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

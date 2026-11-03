@@ -118,7 +118,7 @@ function go(view) {
   $("#projBtn").textContent = S.proj ? S.proj.name : "Choisir un projet";
   badges();
   ({ home: renderHome, import: renderImport, library: renderLibrary, set: renderSet, export: renderExport,
-     soundcloud: renderSoundcloud, spotify: renderSpotify, settings: renderSettings })[view]();
+     soundcloud: renderSoundcloud, spotify: renderSpotify, discover: renderDiscover, settings: renderSettings })[view]();
 }
 
 // Where am I? small counters next to each step.
@@ -720,6 +720,133 @@ async function renderSpotify() {
   };
 }
 
+// ------------------------------------------------------------------ Découverte (tool)
+
+const compact = n => { n = +n || 0; return n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(".", ",")} M` : n >= 1e3 ? `${(n / 1e3).toFixed(1).replace(".", ",")} k` : String(n); };
+const ageFr = d => {
+  d = Math.round(d || 0);
+  if (d < 1) return "aujourd'hui"; if (d < 14) return `il y a ${d} j`;
+  if (d < 60) return `il y a ${Math.round(d / 7)} sem.`; if (d < 730) return `il y a ${Math.round(d / 30)} mois`;
+  return `il y a ${Math.round(d / 365)} ans`;
+};
+const discAudio = (() => {
+  const a = new Audio(); a.preload = "none"; let cur = null;
+  const mark = (url, st) => $$("#dList .dprev").forEach(b => { const on = b.dataset.url === url; b.textContent = on ? (st === "load" ? "…" : st === "play" ? "❚❚" : "▶") : "▶"; });
+  a.addEventListener("playing", () => mark(cur, "play")); a.addEventListener("pause", () => mark(cur, "pause"));
+  a.addEventListener("waiting", () => mark(cur, "load"));
+  a.addEventListener("ended", () => mark(cur, "pause"));
+  a.addEventListener("error", () => { if (cur) { toast("Aperçu indisponible.", true); mark(null); cur = null; } });
+  return { toggle(url) {
+    if (cur === url && !a.paused) return a.pause();
+    if (cur === url && a.src) return a.play().catch(() => {});
+    [$("#a1"), $("#a2")].forEach(x => x.pause());
+    cur = url; a.src = `/api/discover/preview?url=${encodeURIComponent(url)}`; mark(url, "load"); a.play().catch(() => {});
+  }, stop() { a.pause(); cur = null; mark(null); } };
+})();
+
+function renderDiscover() {
+  $("#title").textContent = "Découverte";
+  const P = S.proj;
+  if (!P) { $("#view").innerHTML = `<div class="empty"><b>Aucun projet ouvert</b>Choisis ou crée d'abord un projet.</div>`; return; }
+  S.dSeeds = S.dSeeds || []; S.dOpt = S.dOpt || { hide: true, count: 40 };
+  $("#view").innerHTML = `
+    <div class="panel"><h2>Morceaux de départ</h2>
+      <p class="hint">Jusqu'à 3 morceaux servent de référence pour trouver des remixes et versions peu connus qui montent sur SoundCloud.</p>
+      <div id="dSeeds" class="row" style="margin-bottom:12px"></div>
+      <div class="row" style="align-items:flex-start">
+        <div style="flex:1;min-width:300px"><div class="row">
+          <input type="text" id="dUrl" placeholder="Lien SoundCloud d'un morceau" style="flex:1"><button class="btn" id="dAddUrl">Ajouter</button></div></div>
+        <div style="flex:1;min-width:300px"><input type="text" id="dQ" placeholder="Chercher dans la bibliothèque (artiste, titre)" style="width:100%">
+          <div id="dLib" class="dlib"></div></div></div></div>
+    <div class="panel"><div class="row">
+      <label class="check"><input type="checkbox" id="dHide" ${S.dOpt.hide ? "checked" : ""}> Masquer ce qui est déjà sur Spotify</label>
+      <span class="muted">(si Spotify est connecté)</span>
+      <label class="field" style="flex-direction:row;align-items:center;gap:8px">Résultats<select id="dN">${[20, 40, 60].map(n => `<option ${S.dOpt.count === n ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+      <span class="spacer"></span><button class="btn primary" id="dGo">Chercher</button></div></div>
+    <div id="dRes"></div>`;
+  const seedBox = () => {
+    $("#dSeeds").innerHTML = S.dSeeds.map((d, i) => `<span class="dseed">${d.cover ? `<img class="thumb" src="${esc(d.cover)}" onerror="this.outerHTML='<div class=\\'thumb none\\'>♪</div>'">` : `<div class="thumb none">♪</div>`}
+      <span class="dt" title="${esc(d.label)}">${esc(d.label)}</span><button class="icon" data-rm="${i}" title="Retirer">✕</button></span>`).join("")
+      || `<span class="muted">Aucun morceau choisi.</span>`;
+    $$("#dSeeds [data-rm]").forEach(b => b.onclick = () => { S.dSeeds.splice(+b.dataset.rm, 1); seedBox(); libBox(); });
+  };
+  const addSeed = d => { if (S.dSeeds.length >= 3) return toast("3 morceaux au maximum."); S.dSeeds.push(d); seedBox(); libBox(); };
+  const libBox = () => {
+    const q = $("#dQ").value.trim().toLowerCase(); S.dQ = $("#dQ").value;
+    if (!q) { $("#dLib").innerHTML = ""; return; }
+    const used = new Set(S.dSeeds.map(d => d.id).filter(Boolean));
+    const hits = P.tracks.filter(t => !used.has(t.id) && `${t.artist} ${t.title}`.toLowerCase().includes(q)).slice(0, 8);
+    $("#dLib").innerHTML = hits.map(t => `<div class="dhit" data-id="${t.id}">${thumb(t)}<div class="name"><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></div></div>`).join("") || `<div class="muted" style="padding:6px 2px">Aucun résultat.</div>`;
+    $$("#dLib .dhit").forEach(h => h.onclick = () => {
+      const t = P.tracks.find(x => String(x.id) === h.dataset.id); if (!t) return;
+      addSeed({ id: t.id, label: `${t.artist} - ${t.title}`, cover: t.has_cover ? coverUrl(t) : "" });
+    });
+  };
+  $("#dQ").value = S.dQ || ""; $("#dQ").oninput = libBox;
+  $("#dAddUrl").onclick = () => {
+    const url = $("#dUrl").value.trim(); if (!url) return;
+    if (!/^https?:\/\/(www\.|m\.|on\.)?soundcloud\.com\//i.test(url)) return toast("Lien SoundCloud invalide.", true);
+    addSeed({ url, label: url.replace(/^https?:\/\/(www\.|m\.)?soundcloud\.com\//i, "") }); $("#dUrl").value = "";
+  };
+  $("#dUrl").addEventListener("keydown", e => { if (e.key === "Enter") $("#dAddUrl").click(); });
+  $("#dHide").onchange = e => S.dOpt.hide = e.target.checked;
+  $("#dN").onchange = e => S.dOpt.count = +e.target.value;
+  $("#dGo").onclick = async () => {
+    if (!S.dSeeds.length) return toast("Ajoute au moins un morceau de départ.", true);
+    const seeds = S.dSeeds.map(d => d.id !== undefined ? { id: d.id } : { url: d.url });
+    discAudio.stop();
+    const r = await job("/api/discover", { root: P.root, seeds, count: S.dOpt.count, hide_spotify: S.dOpt.hide }, "Découverte SoundCloud");
+    S.dRes = r; S.dSel = new Set(); drawRes();
+  };
+  const dl = async it => {
+    const r = await job("/api/soundcloud", { root: P.root, url: it.url }, "Téléchargement SoundCloud");
+    if (!r.count) { toast(r.errors?.[0] || "Rien de nouveau à télécharger (déjà téléchargé ?).", !!r.errors?.length); return false; }
+    const known = new Set((S.rows || []).map(x => x.src));
+    S.rows = (S.rows || []).concat(r.rows.filter(x => !known.has(x.src)));
+    it.added = true; S.dSel.delete(it.url); return true;
+  };
+  function drawRes() {
+    const r = S.dRes; if (!r) { $("#dRes").innerHTML = ""; return; }
+    const items = r.results || [], st = r.stats || {};
+    $("#dRes").innerHTML = `<div class="panel"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">${items.length} résultats</h2>
+        <span class="muted">${st.candidates ?? "?"} candidats analysés · ${st.kept ?? items.length} gardés · IA : ${st.ai ? "oui" : "non"}</span><span class="spacer"></span>
+        <button class="btn" id="dAll" ${S.dSel.size ? "" : "disabled"}>Tout télécharger (${S.dSel.size})</button></div>
+      <div id="dList">${items.map((it, i) => {
+        const tr = Math.max(0, Math.min(1, +it.trend > 1 ? it.trend / 100 : +it.trend || 0));
+        const bd = (it.badges || []).map(b => `<span class="chip ${/hausse/i.test(b) ? "rising" : /gratuit/i.test(b) ? "free" : ""}">${esc(b)}</span>`).join("")
+          + (it.free_download && !(it.badges || []).some(b => /gratuit/i.test(b)) ? `<span class="chip free">Téléchargement gratuit</span>` : "");
+        return `<div class="drow" data-i="${i}">
+          <input type="checkbox" class="dsel" ${S.dSel.has(it.url) ? "checked" : ""} ${it.added ? "disabled" : ""}>
+          ${it.cover ? `<img class="thumb big" loading="lazy" src="${esc(it.cover)}" onerror="this.outerHTML='<div class=\\'thumb big none\\'>♪</div>'">` : `<div class="thumb big none">♪</div>`}
+          <button class="icon dprev" data-url="${esc(it.url)}" title="Écouter un extrait">▶</button>
+          <div class="dinfo"><div class="t" title="${esc(it.title)}">${esc(it.title)}</div>
+            <div class="a">${esc(it.artist)} · ${fmt(it.duration)} · ▶ ${compact(it.plays)} · ♥ ${compact(it.likes)} · ${ageFr(it.age_days)}</div>
+            <div>${bd}</div>${it.reason ? `<div class="reason muted">${esc(it.reason)}</div>` : ""}</div>
+          <div class="ebar" title="Tendance ${Math.round(tr * 100)} %"><i style="width:${Math.max(4, tr * 100)}%"></i></div>
+          <div class="dact">${it.added ? `<span class="chip ok">Ajouté</span>` : `<button class="btn small primary ddl">Télécharger</button>`}
+            <button class="btn small dopen">Ouvrir</button><button class="btn small dno" title="Ne plus proposer ce morceau">Pas pour moi</button></div></div>`;
+      }).join("") || `<div class="empty"><b>Aucun résultat</b>Essaie d'autres morceaux de départ.</div>`}</div>
+      ${(r.queries || []).length ? `<details class="guide"><summary>Recherches utilisées (${r.queries.length})</summary><ul class="dq">${r.queries.map(q => `<li>${esc(q)}</li>`).join("")}</ul></details>` : ""}</div>`;
+    $$("#dList .drow").forEach(row => {
+      const it = items[+row.dataset.i];
+      $(".dsel", row).onchange = e => { e.target.checked ? S.dSel.add(it.url) : S.dSel.delete(it.url); $("#dAll").textContent = `Tout télécharger (${S.dSel.size})`; $("#dAll").disabled = !S.dSel.size; };
+      $(".dprev", row).onclick = () => discAudio.toggle(it.url);
+      $(".dopen", row).onclick = () => api("/api/open", { path: it.url });
+      if ($(".ddl", row)) $(".ddl", row).onclick = async () => { if (await dl(it)) { toast("Ajouté à la liste d'import."); drawRes(); } };
+      $(".dno", row).onclick = async () => {
+        await api("/api/discover/ignore", { root: P.root, url: it.url });
+        S.dRes.results = S.dRes.results.filter(x => x !== it); S.dSel.delete(it.url); drawRes();
+      };
+    });
+    $("#dAll").onclick = async () => {
+      let n = 0;
+      for (const it of items.filter(x => S.dSel.has(x.url) && !x.added)) { try { if (await dl(it)) n++; } catch { break; } }
+      drawRes(); if (n) toast(`${n} morceaux ajoutés : vérifie les noms dans « Importer ».`);
+    };
+  }
+  seedBox(); libBox(); if (S.dRes) { S.dSel = S.dSel || new Set(); drawRes(); }
+}
+
 // ------------------------------------------------------------------ settings
 
 async function renderSettings() {
@@ -743,6 +870,11 @@ async function renderSettings() {
           <option value="eco">Économique — Haiku (recommandé)</option><option value="equilibre">Équilibré — Sonnet</option><option value="max">Maximum — Opus</option></select></label>
         <label class="field" style="width:300px">Morceaux similaires (Spotify)<select id="sLvS">
           <option value="eco">Économique — Haiku</option><option value="equilibre">Équilibré — Sonnet (recommandé)</option><option value="max">Maximum — Opus</option></select></label></div>
+      <div class="row" style="margin-top:12px;align-items:flex-start">
+        <label class="field" style="width:300px">Découverte – idées de recherche<select id="sLvD">
+          <option value="eco">Économique — Haiku</option><option value="equilibre">Équilibré — Sonnet</option><option value="max">Maximum — Opus</option></select></label>
+        <label class="field" style="width:300px">Découverte – tri des résultats<select id="sLvDS">
+          <option value="eco">Économique — Haiku</option><option value="equilibre">Équilibré — Sonnet</option><option value="max">Maximum — Opus</option></select></label></div>
       <p class="hint" style="margin:8px 0 0">Les noms et notes sont des tâches simples : Haiku suffit. Pour les morceaux similaires, il faut une vraie culture musicale : Sonnet invente moins de titres. Avec Codex, le niveau règle l'effort de réflexion (modèle ci-dessous).</p>
       <div class="muted" style="margin-top:8px">État : ${ai.ok ? `<span class="chip ok">prête</span> via ${esc(ai.label)}` : `<span class="chip warn">non configurée</span>`}</div></div>
     ${tool("claude", "Abonnement Claude (Pro / Max)", ai.claude, `<p class="hint">Passe par Claude Code connecté à ton compte : compté dans ton forfait, rien à payer en plus.</p>`)}
@@ -761,6 +893,9 @@ async function renderSettings() {
   const prov = s.ai_provider === "subscription" ? "claude" : (s.ai_provider || "auto");
   $("#sProv").value = prov;
   $("#sLvN").value = s.ai_level_names || "eco"; $("#sLvS").value = s.ai_level_similar || "equilibre";
+  $("#sLvD").value = s.ai_level_discover || "equilibre"; $("#sLvDS").value = s.ai_level_discover_sort || "eco";
+  $("#sLvD").onchange = e => api("/api/settings", { ai_level_discover: e.target.value }).then(() => toast("Enregistré."));
+  $("#sLvDS").onchange = e => api("/api/settings", { ai_level_discover_sort: e.target.value }).then(() => toast("Enregistré."));
   $("#sLvN").onchange = e => api("/api/settings", { ai_level_names: e.target.value }).then(() => toast("Enregistré."));
   $("#sLvS").onchange = e => api("/api/settings", { ai_level_similar: e.target.value }).then(() => toast("Enregistré."));
   $("#sProv").onchange = async e => { await api("/api/settings", { ai_provider: e.target.value }); renderSettings(); };
